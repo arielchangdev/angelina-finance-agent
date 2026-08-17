@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Angelina - AI 金融理財專家</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans TC', sans-serif;
+            background: #f0f2f5; height: 100vh; display: flex; flex-direction: column;
+        }
+        .header {
+            background: #1a73e8; color: white; padding: 12px 20px;
+            display: flex; align-items: center; justify-content: space-between;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .header h1 { font-size: 1.2rem; font-weight: 600; }
+        .header-controls { display: flex; align-items: center; gap: 12px; }
+        .language-selector {
+            padding: 6px 12px; border: 1px solid rgba(255,255,255,0.3);
+            border-radius: 6px; background: rgba(255,255,255,0.1);
+            color: white; font-size: 0.85rem; cursor: pointer; outline: none;
+        }
+        .language-selector option { background: #1a73e8; color: white; }
+        .conversation-area {
+            flex: 1; overflow-y: auto; padding: 20px;
+            display: flex; flex-direction: column; gap: 12px;
+        }
+        .message {
+            max-width: 75%; padding: 10px 14px; border-radius: 12px;
+            position: relative; word-wrap: break-word; white-space: pre-wrap;
+        }
+        .message-user {
+            align-self: flex-end; background: #1a73e8; color: white;
+            border-bottom-right-radius: 4px;
+        }
+        .message-assistant {
+            align-self: flex-start; background: white; color: #1f2937;
+            border-bottom-left-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .message-error {
+            align-self: center; background: #fef2f2; color: #dc2626;
+            border: 1px solid #fecaca; border-radius: 8px;
+            font-size: 0.85rem; text-align: center;
+        }
+        .message-meta { font-size: 0.7rem; margin-top: 4px; opacity: 0.7; }
+        .message-user .message-meta { text-align: right; }
+        .message-assistant .message-meta { text-align: left; }
+        .message-role { font-size: 0.75rem; font-weight: 600; margin-bottom: 2px; opacity: 0.8; }
+        .loading-container {
+            align-self: flex-start; display: none; padding: 10px 14px;
+            background: white; border-radius: 12px; border-bottom-left-radius: 4px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .loading-container.visible { display: block; }
+        .spinner {
+            display: inline-block; width: 20px; height: 20px;
+            border: 3px solid #e5e7eb; border-top-color: #1a73e8;
+            border-radius: 50%; animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .input-area {
+            padding: 12px 20px; background: white; border-top: 1px solid #e5e7eb;
+            display: flex; gap: 10px; align-items: flex-end;
+        }
+        .input-wrapper { flex: 1; position: relative; }
+        #message-input {
+            width: 100%; padding: 10px 14px; border: 1px solid #d1d5db;
+            border-radius: 20px; font-size: 0.95rem; outline: none;
+            resize: none; max-height: 120px; min-height: 40px;
+            line-height: 1.4; font-family: inherit;
+        }
+        #message-input:focus { border-color: #1a73e8; box-shadow: 0 0 0 2px rgba(26,115,232,0.2); }
+        .char-count { position: absolute; bottom: -18px; right: 10px; font-size: 0.7rem; color: #9ca3af; }
+        .char-count.warning { color: #dc2626; }
+        #send-btn {
+            padding: 10px 20px; background: #1a73e8; color: white; border: none;
+            border-radius: 20px; font-size: 0.9rem; cursor: pointer;
+            white-space: nowrap; transition: background 0.2s;
+        }
+        #send-btn:hover { background: #1557b0; }
+        #send-btn:disabled { background: #9ca3af; cursor: not-allowed; }
+        .validation-error { color: #dc2626; font-size: 0.8rem; padding: 4px 14px; display: none; }
+        .validation-error.visible { display: block; }
+        .welcome-message { text-align: center; color: #6b7280; padding: 40px 20px; font-size: 0.95rem; line-height: 1.6; }
+        .help-text { font-size: 0.8rem; color: #9ca3af; padding: 4px 14px; margin-top: 2px; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🏦 Angelina - AI 金融理財專家</h1>
+        <div class="header-controls">
+            <select id="language-selector" class="language-selector" aria-label="Language selector">
+                <option value="zh-TW">繁體中文</option>
+                <option value="en">English</option>
+            </select>
+        </div>
+    </div>
+
+    <div id="conversation-area" class="conversation-area">
+        <div class="welcome-message" id="welcome-message">
+            歡迎使用 Angelina 金融理財專家！<br>
+            請輸入您的金融或投資問題。<br><br>
+            <span style="font-size:0.85rem; color:#9ca3af;">
+                指令: /learn &lt;內容&gt; — 教導知識 | /fetch-url &lt;URL&gt; — 從網址學習 | /learning-stats — 統計
+            </span>
+        </div>
+    </div>
+
+    <div class="loading-container" id="loading-indicator">
+        <div class="spinner"></div>
+    </div>
+
+    <div class="input-area">
+        <div class="input-wrapper">
+            <textarea id="message-input" rows="1" maxlength="2000"
+                placeholder="輸入您的問題..." aria-label="Message input"></textarea>
+            <div class="char-count" id="char-count">0 / 2000</div>
+        </div>
+        <button id="send-btn" aria-label="Send message">傳送</button>
+    </div>
+    <div class="validation-error" id="validation-error"></div>
+
+    <script>
+        // --- State ---
+        let sessionId = sessionStorage.getItem('angelina_session_id');
+        if (!sessionId) { sessionId = generateUUID(); sessionStorage.setItem('angelina_session_id', sessionId); }
+        const savedLang = sessionStorage.getItem('angelina_language');
+        if (savedLang) document.getElementById('language-selector').value = savedLang;
+
+        // --- DOM ---
+        const messageInput = document.getElementById('message-input');
+        const sendBtn = document.getElementById('send-btn');
+        const conversationArea = document.getElementById('conversation-area');
+        const loadingIndicator = document.getElementById('loading-indicator');
+        const charCount = document.getElementById('char-count');
+        const validationError = document.getElementById('validation-error');
+        const languageSelector = document.getElementById('language-selector');
+        const welcomeMessage = document.getElementById('welcome-message');
+
+        function generateUUID() {
+            return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+                const r = Math.random() * 16 | 0;
+                return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+            });
+        }
+
+        function validateMessage(msg) {
+            if (!msg || msg.trim() === '') return { valid: false, error: getLang() === 'en' ? 'Please enter a valid message.' : '請輸入有效訊息。' };
+            if (msg.length > 2000) return { valid: false, error: getLang() === 'en' ? 'Message exceeds 2000 character limit.' : '訊息超過 2000 字元限制。' };
+            return { valid: true, error: null };
+        }
+
+        function getLang() { return languageSelector.value; }
+
+        function formatTime(d) {
+            const date = d ? new Date(d) : new Date();
+            return String(date.getHours()).padStart(2,'0') + ':' + String(date.getMinutes()).padStart(2,'0');
+        }
+
+        function getRoleLabel(role) {
+            return role === 'user' ? (getLang() === 'en' ? 'You' : '你') : 'Angelina';
+        }
+
+        function appendMessage(role, content, ts) {
+            if (welcomeMessage) welcomeMessage.style.display = 'none';
+            const d = document.createElement('div');
+            d.className = 'message message-' + role;
+            d.innerHTML = '<div class="message-role">' + getRoleLabel(role) + '</div>' +
+                '<div class="message-content"></div>' +
+                '<div class="message-meta">' + formatTime(ts) + '</div>';
+            d.querySelector('.message-content').textContent = content;
+            conversationArea.appendChild(d);
+            scrollToBottom();
+        }
+
+        function appendError(text) {
+            const d = document.createElement('div');
+            d.className = 'message message-error';
+            d.textContent = text;
+            conversationArea.appendChild(d);
+            scrollToBottom();
+        }
+
+        function scrollToBottom() { conversationArea.scrollTop = conversationArea.scrollHeight; }
+        function showLoading() { loadingIndicator.classList.add('visible'); conversationArea.appendChild(loadingIndicator); scrollToBottom(); }
+        function hideLoading() { loadingIndicator.classList.remove('visible'); }
+
+        async function sendMessage() {
+            const msg = messageInput.value;
+            const v = validateMessage(msg);
+            if (!v.valid) { validationError.textContent = v.error; validationError.classList.add('visible'); return; }
+            validationError.classList.remove('visible');
+            messageInput.disabled = true; sendBtn.disabled = true;
+            appendMessage('user', msg, null);
+            messageInput.value = ''; updateCharCount(); autoResize();
+            showLoading();
+            try {
+                const res = await fetch('/chat', {
+                    method: 'POST', headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify({ message: msg, session_id: sessionId, language: getLang() })
+                });
+                hideLoading();
+                if (!res.ok) {
+                    let err; try { err = (await res.json()).detail; } catch(e) { err = null; }
+                    appendError(err || (getLang()==='en' ? 'An error occurred.' : '發生錯誤。'));
+                } else {
+                    const data = await res.json();
+                    appendMessage('assistant', data.reply, data.timestamp);
+                }
+            } catch(e) {
+                hideLoading();
+                appendError(getLang()==='en' ? 'Network error. Please try again.' : '網路錯誤，請稍後再試。');
+            } finally {
+                messageInput.disabled = false; sendBtn.disabled = false; messageInput.focus();
+            }
+        }
+
+        function updateCharCount() {
+            const len = messageInput.value.length;
+            charCount.textContent = len + ' / 2000';
+            charCount.classList.toggle('warning', len > 1900);
+        }
+
+        function autoResize() {
+            messageInput.style.height = 'auto';
+            messageInput.style.height = Math.min(messageInput.scrollHeight, 120) + 'px';
+        }
+
+        messageInput.addEventListener('input', () => { updateCharCount(); autoResize(); validationError.classList.remove('visible'); });
+        messageInput.addEventListener('keydown', e => { if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
+        sendBtn.addEventListener('click', sendMessage);
+        languageSelector.addEventListener('change', function() {
+            sessionStorage.setItem('angelina_language', this.value);
+            const en = this.value === 'en';
+            messageInput.placeholder = en ? 'Type your question...' : '輸入您的問題...';
+            sendBtn.textContent = en ? 'Send' : '傳送';
+            document.title = en ? 'Angelina - AI Financial Expert' : 'Angelina - AI 金融理財專家';
+        });
+        updateCharCount();
+    </script>
+</body>
+</html>

@@ -1,0 +1,48 @@
+---
+- name: Check status of all agent VMs
+  hosts: agents
+  gather_facts: false
+  tasks:
+    - name: Check container running
+      ansible.builtin.shell: "podman ps --all --format 'table {{'{{'}} .Names {{'}}'}} {{'{{'}} .Status {{'}}'}}' 2>/dev/null || echo 'podman not available'"
+      register: container_status
+      changed_when: false
+      ignore_errors: true
+
+    - name: Container result
+      ansible.builtin.debug:
+        msg: "{{ container_status.stdout_lines | default(['unknown']) }}"
+
+    - name: Check health
+      ansible.builtin.uri:
+        url: "http://{{ ansible_host }}:8080/health"
+        method: GET
+        timeout: 10
+      register: health
+      ignore_errors: true
+
+    - name: Health result
+      ansible.builtin.debug:
+        msg: "Health: {{ health.json.status | default('UNREACHABLE') }}"
+
+    - name: Get stats
+      ansible.builtin.uri:
+        url: "http://{{ ansible_host }}:8080/stats"
+        method: GET
+        timeout: 10
+      register: stats
+      ignore_errors: true
+
+    - name: Stats result
+      ansible.builtin.debug:
+        msg: "Turns: {{ stats.json.memory_turns | default('N/A') }}, Vectors: {{ stats.json.vector_count | default('N/A') }}"
+      when: stats is succeeded
+
+    - name: Disk usage
+      ansible.builtin.shell: "df -h {{ app_dir }} | tail -1"
+      register: disk
+      changed_when: false
+
+    - name: Disk result
+      ansible.builtin.debug:
+        msg: "Disk: {{ disk.stdout }}"

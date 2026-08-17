@@ -1,0 +1,31 @@
+---
+# Backup Playbook - Run backup on all agent VMs
+- name: Run backup on all agent VMs
+  hosts: agents
+  gather_facts: false
+
+  tasks:
+    - name: Execute backup
+      block:
+        - name: Run backup script
+          ansible.builtin.shell: bash {{ app_dir }}/deploy/backup.sh
+          register: backup_result
+          changed_when: true
+
+        - name: Report backup success
+          ansible.builtin.debug:
+            msg: |
+              ===== BACKUP RESULT for {{ inventory_hostname }} =====
+              Status: SUCCESS
+              Output: {{ backup_result.stdout }}
+              ================================================
+
+      rescue:
+        - name: Report backup failure
+          ansible.builtin.debug:
+            msg: |
+              ===== BACKUP RESULT for {{ inventory_hostname }} =====
+              Status: FAILED
+              Error: {{ ansible_failed_result.msg | default('Unknown error') }}
+              Stderr: {{ backup_result.stderr | default('N/A') }}
+              ================================================

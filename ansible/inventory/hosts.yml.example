@@ -1,0 +1,15 @@
+all:
+  children:
+    agents:
+      hosts:
+        angelina:
+          ansible_host: YOUR_VM_IP
+          ansible_user: YOUR_SSH_USER
+          ansible_password: YOUR_SSH_PASSWORD
+          ansible_become_password: YOUR_SUDO_PASSWORD
+          app_dir: /opt/angelina
+          container_name: angelina-app
+          image_name: "angelina:latest"
+  vars:
+    ansible_connection: ssh
+    ansible_python_interpreter: /usr/bin/python3

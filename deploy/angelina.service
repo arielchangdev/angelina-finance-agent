@@ -1,0 +1,19 @@
+﻿[Unit]
+Description=Angelina AI Financial Expert Agent
+After=network.target
+
+[Service]
+Type=simple
+User=angelina
+WorkingDirectory=/opt/angelina
+EnvironmentFile=/opt/angelina/.env
+ExecStart=/opt/angelina/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8080
+Restart=always
+RestartSec=5
+MemoryLimit=2G
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=append:/var/log/angelina/app.log
+StandardError=append:/var/log/angelina/app.log
+
+[Install]
+WantedBy=multi-user.target

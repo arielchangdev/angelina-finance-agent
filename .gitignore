@@ -1,0 +1,38 @@
+# Environment and secrets
+.env
+.env.production
+config/service-account.json
+
+# Data (user-specific)
+data/conversations.db
+data/vector_store/
+data/drive_sync_state.json
+data/notebooklm/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.hypothesis/
+.pytest_cache/
+
+# Logs
+*.log
+/var/log/angelina/
+
+# IDE
+.vscode/
+.idea/
+.kiro/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Backups
+backups/
+
+# Test files with secrets
+deploy/test_gemini.py
+deploy/test_models.py

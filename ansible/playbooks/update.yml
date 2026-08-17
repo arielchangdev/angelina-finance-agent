@@ -1,0 +1,52 @@
+---
+# Update Playbook - Update and redeploy agent VMs
+- name: Update and redeploy all agent VMs
+  hosts: agents
+  gather_facts: false
+
+  tasks:
+    - name: Update and redeploy
+      block:
+        - name: Execute update script
+          ansible.builtin.shell: bash {{ app_dir }}/deploy/update.sh
+          register: update_result
+          changed_when: true
+
+        - name: Print update output
+          ansible.builtin.debug:
+            msg: |
+              ===== UPDATE OUTPUT for {{ inventory_hostname }} =====
+              {{ update_result.stdout }}
+              ================================================
+
+        - name: Wait for service to start
+          ansible.builtin.pause:
+            seconds: 10
+
+        - name: Verify health after update
+          ansible.builtin.uri:
+            url: "http://localhost:8080/health"
+            method: GET
+            timeout: 30
+          register: health_check
+          retries: 5
+          delay: 5
+          until: health_check.status == 200
+
+        - name: Report update success
+          ansible.builtin.debug:
+            msg: |
+              ===== UPDATE RESULT for {{ inventory_hostname }} =====
+              Status: SUCCESS
+              Health check: PASSED
+              ================================================
+
+      rescue:
+        - name: Report update failure
+          ansible.builtin.debug:
+            msg: |
+              ===== UPDATE RESULT for {{ inventory_hostname }} =====
+              Status: FAILED
+              Error: {{ ansible_failed_result.msg | default('Unknown error') }}
+              Stderr: {{ update_result.stderr | default('N/A') }}
+              ================================================
