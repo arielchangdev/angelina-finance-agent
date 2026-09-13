@@ -24,10 +24,21 @@ except ImportError:
     SHEETS_ENABLED = False
     print("[WARN] sheets_tracker not available")
 
+# Heartbeat (hybrid-cloud presence relay). Additive and best-effort: the local
+# instance stamps a fresh heartbeat after a successful daily push so the passive
+# Cloud_Instance can tell local is alive. A missing module or any write failure
+# must NEVER break or block the existing daily push.
+try:
+    from app.heartbeat import write_heartbeat
+    HEARTBEAT_ENABLED = True
+except ImportError:
+    HEARTBEAT_ENABLED = False
+    print("[WARN] heartbeat module not available")
+
 # Configuration
-TELEGRAM_BOT_TOKEN = 'YOUR_TELEGRAM_BOT_TOKEN'
-TELEGRAM_CHAT_ID = 'YOUR_TELEGRAM_CHAT_ID'
-GEMINI_API_KEY = 'YOUR_GEMINI_API_KEY'
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', 'YOUR_TELEGRAM_BOT_TOKEN')
+TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID', 'YOUR_TELEGRAM_CHAT_ID')
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', 'YOUR_GEMINI_API_KEY')
 ANGELINA_URL = 'http://localhost:8080'
 TW_TZ = timezone(timedelta(hours=8))
 GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-flash-lite-latest']
@@ -58,7 +69,8 @@ def save_sent_hash(msg_hash):
 def get_message_hash(text):
     """Generate a hash for message deduplication."""
     today = datetime.now(TW_TZ).strftime('%Y-%m-%d')
-    return hashlib.md5(f"{today}:{text.replace('\n', ' ')[:500]}".encode()).hexdigest()
+    normalized = text.replace('\n', ' ')[:500]
+    return hashlib.md5(f"{today}:{normalized}".encode()).hexdigest()
 
 
 async def fetch_twse_daily(client):
@@ -317,7 +329,7 @@ async def generate_report(market_data, knowledge, is_weekend=False):
                                 full_text += p['text']
                         return full_text
             else:
-                print(f"  [WARN] Model {model_name} failed: HTTP {resp.status_code if resp else 'no response'} - {resp.text[:500] if resp else ''}")
+                print(f"  [WARN] Model {model_name} failed: HTTP {resp.status_code if resp else 'no response'}")
                 continue
         return None
 
@@ -380,47 +392,19 @@ async def generate_report(market_data, knowledge, is_weekend=False):
             stage1_text = await _call_gemini(client, stage1_prompt, temperature=0.2, max_tokens=1024)
 
         if stage1_text:
-            print(f"  [Stage 1] Raw response: {repr(stage1_text[:300])}")
-            print(f"  [Stage 1] Raw response: {repr(stage1_text[:300])}")
             # Parse the JSON from Stage 1 response
-            # Robust JSON extraction - find the JSON object anywhere in response
-            text = stage1_text.strip()
-            # Remove markdown code fences
-            if "```" in text:
-                import re as _re2
-                json_match = _re2.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', text)
-                if json_match:
-                    text = json_match.group(0)
-                else:
-                    text = text.replace("```json", "").replace("```", "").strip()
-            # Find the JSON object
-            start_idx = text.find("{")
-            end_idx = text.rfind("}") + 1
-            if start_idx >= 0 and end_idx > start_idx:
-                text = text[start_idx:end_idx]
-            stage1_assessment = json.loads(text)
+            cleaned = stage1_text.strip()
+            if cleaned.startswith("```"):
+                cleaned = "\n".join(cleaned.split("\n")[1:])
+            if cleaned.endswith("```"):
+                cleaned = cleaned.rsplit("```", 1)[0]
+            cleaned = cleaned.strip()
+            stage1_assessment = json.loads(cleaned)
             print(f"  [Stage 1] Assessment: direction={stage1_assessment.get('market_direction')}, "
                   f"change={stage1_assessment.get('tw_change_pct')}%")
     except (json.JSONDecodeError, Exception) as e:
-        print(f"  [Stage 1] JSON parse failed: {e}. Trying regex extraction...")
-        # Regex fallback: extract key fields from the text
-        try:
-            import re as _re3
-            direction_match = _re3.search(r'"market_direction"\s*:\s*"(bullish|bearish|neutral)"', stage1_text)
-            pct_match = _re3.search(r'"tw_change_pct"\s*:\s*([\d.\-+]+)', stage1_text)
-            if direction_match:
-                stage1_assessment = {
-                    "market_direction": direction_match.group(1),
-                    "tw_change_pct": float(pct_match.group(1)) if pct_match else 0.0,
-                    "key_events": [],
-                    "institutional_flow": ""
-                }
-                print(f"  [Stage 1] Regex extraction: direction={stage1_assessment['market_direction']}, pct={stage1_assessment['tw_change_pct']}")
-            else:
-                print(f"  [Stage 1] Regex extraction also failed. Falling back.")
-                stage1_assessment = None
-        except Exception:
-            stage1_assessment = None
+        print(f"  [Stage 1] Failed to parse assessment: {e}. Falling back to single-stage.")
+        stage1_assessment = None
 
     # If Stage 1 failed, fall back to original single-stage behavior
     if stage1_assessment is None:
@@ -710,6 +694,14 @@ async def main():
     success = await send_telegram(final_report)
     if success:
         print("  ✓ Report sent to Telegram successfully")
+        # Best-effort heartbeat stamp AFTER a successful daily push (Req 3.1).
+        # Isolated so any heartbeat failure never breaks or blocks the push.
+        if HEARTBEAT_ENABLED:
+            try:
+                write_heartbeat()
+                print("  ✓ Heartbeat stamped (local presence recorded)")
+            except Exception as e:
+                print(f"  [WARN] Heartbeat write failed (non-critical): {e}")
     else:
         print("  ✗ Failed to send to Telegram")
 

@@ -1,0 +1,19 @@
+# Angelina Hybrid Cloud — Cloud_Instance cron fragment (Task 12.2)
+# ---------------------------------------------------------------------------
+# STAGED ARTIFACT — NOT installed automatically. See install-cloud-cron.sh and
+# README.md before applying to the cloud VM.
+#
+# Times are in the cloud VM's local timezone. The 23:00 job mirrors the local
+# Daily_Push convention; the failover wrapper (app.failover.run_daily_push)
+# gates the push on the heartbeat presence check (role=cloud -> only pushes
+# when the local instance is classified offline). The 06:00 job mirrors the
+# local bi-directional sync job pattern exactly.
+#
+# Requirements: 1.5 / 5.1 (23:00 failover push, 06:00 daily sync on cloud).
+# ---------------------------------------------------------------------------
+
+# --- 23:00 daily push via the role-gated failover wrapper (cloud=passive) ---
+0 23 * * * cd /opt/angelina && /opt/angelina/venv/bin/python -c "import asyncio; from app.failover import run_daily_push; asyncio.run(run_daily_push())" >> /var/log/angelina/daily.log 2>&1
+
+# --- 06:00 daily bi-directional sync (mirrors the local sync job) ---
+0 6 * * * cd /opt/angelina && /opt/angelina/venv/bin/python -c "import asyncio; from app.sync_engine import run_sync; asyncio.run(run_sync())" >> /var/log/angelina/sync.log 2>&1

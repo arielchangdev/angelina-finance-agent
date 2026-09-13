@@ -36,3 +36,9 @@ backups/
 # Test files with secrets
 deploy/test_gemini.py
 deploy/test_models.py
+
+# Hybrid cloud secrets / local artifacts (never commit real values)
+caddy.env
+*.env.local
+deploy/**/service-account.json
+**/service-account.json

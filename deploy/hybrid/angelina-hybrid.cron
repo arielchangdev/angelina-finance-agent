@@ -1,0 +1,40 @@
+# Angelina Hybrid Cloud — LOCAL instance cron fragment (Task 9.1)
+# ---------------------------------------------------------------------------
+# REVIEWABLE ARTIFACT — NOT installed automatically. See install-local-cron.sh
+# and the apply plan in deploy/hybrid/APPLY_PLAN.md before applying to the VM.
+#
+# Times are in the VM's local timezone (Asia/Taipei, UTC+8), matching the
+# existing 23:00 Daily_Push convention.
+#
+# This fragment adds ONE new job: the 06:00 bi-directional sync. It is additive
+# and does not touch the existing 23:00 Daily_Push job or any other cron entry.
+#
+# Requirements: 5.1 (once-per-day sync at a configured off-peak time), 2.4
+# (non-regression: existing local behavior untouched).
+#
+# NOTE ON THE 23:00 PUSH (for reviewer context, DO NOT duplicate):
+#   The existing local crontab already runs the 23:00 Daily_Push. Task 9.1
+#   item 1 (stamp heartbeat after a successful push) is handled *inside the
+#   application* (app/daily_analysis.py now calls write_heartbeat() after a
+#   successful Telegram send), so NO cron change is needed for the heartbeat.
+#   The existing 23:00 line is intentionally NOT modified here.
+#
+#   If you later want the 23:00 job to run through the role-gated wrapper
+#   (app.failover.run_daily_push) instead of app.daily_analysis directly, that
+#   is an OPTIONAL migration — see the commented reference line at the bottom.
+# ---------------------------------------------------------------------------
+
+# --- NEW: 06:00 daily bi-directional sync (local instance) ---
+# Runs app.sync_engine.run_sync once per day, well away from the 23:00 push.
+# Env is sourced from /opt/angelina/.env by the wrapper's python process via the
+# app's own os.getenv calls; we set PYTHONPATH and cd into the app dir so the
+# `app.` package imports resolve exactly as under systemd.
+0 6 * * * cd /opt/angelina && /opt/angelina/venv/bin/python -c "import asyncio; from app.sync_engine import run_sync; asyncio.run(run_sync())" >> /var/log/angelina/sync.log 2>&1
+
+# ---------------------------------------------------------------------------
+# OPTIONAL reference (commented — do NOT enable without explicit review):
+# Replace the existing 23:00 daily_analysis job with the role-gated failover
+# wrapper (which also stamps the heartbeat). Only enable this if you first
+# REMOVE the current 23:00 daily_analysis line to avoid a double push.
+# 0 23 * * * cd /opt/angelina && /opt/angelina/venv/bin/python -c "import asyncio; from app.failover import run_daily_push; asyncio.run(run_daily_push())" >> /var/log/angelina/daily.log 2>&1
+# ---------------------------------------------------------------------------

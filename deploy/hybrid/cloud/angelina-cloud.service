@@ -1,0 +1,24 @@
+[Unit]
+# Angelina Hybrid Cloud — Cloud_Instance systemd unit (Task 12.2)
+# STAGED ARTIFACT — not installed on any VM. Install to
+# /etc/systemd/system/angelina.service on the cloud VM (see README.md).
+#
+# Mirrors the LOCAL angelina.service EXCEPT ExecStart binds uvicorn to
+# 127.0.0.1 (NOT 0.0.0.0): on the cloud, port 8080 must never be exposed
+# publicly — only Caddy reverse-proxies to it over loopback (Req 8.1).
+Description=Angelina AI Finance Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=angelina
+WorkingDirectory=/opt/angelina
+EnvironmentFile=/opt/angelina/.env
+ExecStart=/opt/angelina/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8080
+Restart=always
+RestartSec=5
+MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,34 @@
+# ===========================================================================
+# Angelina Hybrid Cloud — LOCAL instance .env additions (Task 9.1)
+# ===========================================================================
+# REVIEWABLE ARTIFACT — append these two lines to the VM's /opt/angelina/.env.
+# Do NOT edit the VM's .env from the workstation; see APPLY_PLAN.md for the
+# reviewed apply step.
+#
+# Why these are safe (zero local regression):
+#   * INSTANCE_ROLE=local  -> app/auth.py require_token() is a NO-OP in the
+#     local role, so LAN-only local behavior and every existing endpoint stay
+#     exactly as they are today. It also selects the "local" (primary) branch
+#     in app/failover.py.
+#   * INSTANCE_ID=local    -> used by app/sync_engine.py to name this side's
+#     export file (angelina_export_local.json) and to win ties in merge().
+#
+# Both default to "local" in code already, so setting them explicitly changes
+# nothing functionally on the local instance — it just makes the role explicit
+# and documented, and keeps the local/cloud .env files symmetric.
+#
+# Requirements: 2.3, 2.4 (non-regression), 3.1, 5.1.
+# ---------------------------------------------------------------------------
+
+# --- Angelina Hybrid Cloud (local instance) ---
+INSTANCE_ROLE=local
+INSTANCE_ID=local
+
+# Optional (only if you want a non-default presence window; default is 25h):
+# PRESENCE_WINDOW_HOURS=25
+
+# Optional (only needed once the 06:00 sync should actually talk to Drive;
+# set this to the shared "AngelinaSync" Drive folder id. When unset, run_sync
+# short-circuits with a warning instead of crashing — safe to leave unset
+# until the cloud side is provisioned):
+# ANGELINA_SYNC_FOLDER_ID=

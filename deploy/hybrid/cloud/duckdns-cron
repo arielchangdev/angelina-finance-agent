@@ -1,0 +1,19 @@
+# Angelina Hybrid Cloud — DuckDNS updater cron fragment (Task 12.3)
+# ---------------------------------------------------------------------------
+# STAGED ARTIFACT — NOT installed automatically. See README.md before applying.
+#
+# Keeps YOUR_SUBDOMAIN.duckdns.org pointed at the VM's current ephemeral IP.
+# Runs every 5 minutes and once at boot. The script reads DUCKDNS_TOKEN from
+# /opt/angelina/.env and logs to /var/log/angelina/duckdns.log.
+#
+# Install location on the VM (referenced below):
+#   /opt/angelina/deploy/duckdns-update.sh  (chmod +x)
+#
+# Requirements: 8.4 (keep the DuckDNS A-record current for Caddy TLS).
+# ---------------------------------------------------------------------------
+
+# --- every 5 minutes ---
+*/5 * * * * /opt/angelina/deploy/duckdns-update.sh >/dev/null 2>&1
+
+# --- once at boot (ephemeral IP may change after a stop/start) ---
+@reboot /opt/angelina/deploy/duckdns-update.sh >/dev/null 2>&1

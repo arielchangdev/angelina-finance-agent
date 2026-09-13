@@ -1,0 +1,24 @@
+# Angelina Hybrid Cloud — Caddyfile for the Cloud_Instance (Task 12.4)
+# ---------------------------------------------------------------------------
+# STAGED ARTIFACT — not installed on any VM. Install to /etc/caddy/Caddyfile
+# on the cloud VM (see install-caddy.sh / README.md).
+#
+# Caddy terminates HTTPS (automatic Let's Encrypt for the DuckDNS name) and
+# reverse-proxies to Angelina bound on loopback 127.0.0.1:8080. Angelina's
+# 8080 is never exposed publicly; only 80 (ACME challenge) and 443 (HTTPS)
+# are opened at the firewall (Req 8.1, 8.4, 8.7).
+#
+# ACME EMAIL — REQUIRED, DO NOT hardcode a real address here.
+# Caddy needs an ACME contact email for Let's Encrypt. Supply it as the
+# CADDY_EMAIL environment variable (e.g. in /etc/caddy/caddy.env referenced by
+# the caddy systemd unit, or exported before `caddy run`). The global option
+# below reads {$CADDY_EMAIL}. If you prefer, replace {$CADDY_EMAIL} with the
+# operator's real address directly — but keep it OUT of version control.
+
+{
+	email {$CADDY_EMAIL}
+}
+
+YOUR_SUBDOMAIN.duckdns.org {
+	reverse_proxy 127.0.0.1:8080
+}

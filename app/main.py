@@ -10,18 +10,23 @@ Requirements: 1.1, 2.2, 2.3, 2.4, 2.5, 3.3, 3.4, 3.5, 3.6, 4.2, 4.4, 4.5, 5.4, 5
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import sys
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import AsyncGenerator
 
 import structlog
-from fastapi import FastAPI, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 
-from app.models import ChatRequest, ChatResponse, SourceRef
+from app.auth import check_cloud_token_configured, require_token
+from app.heartbeat import PRESENCE_WINDOW_HOURS, read_heartbeat
+from app.models import ChatRequest, ChatResponse, SourceRef, SyncPayload
+from app.rate_limiter import enforce_rate_limit
+from app.sync_engine import export_state, import_merged, merge
 from app.services.conversation_memory import ConversationMemory
 from app.services.gemini_gateway import (
     GeminiAPIError,
@@ -94,6 +99,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     logger.info("application_startup", message="Initializing services...")
 
+    # Fail fast if the cloud role is missing its Access_Token (Req 8.10).
+    # No-op in the local role (the default), so local startup is unchanged.
+    check_cloud_token_configured()
+
     # Initialize ConversationMemory
     _memory = ConversationMemory()
     await _memory.initialize()
@@ -157,7 +166,27 @@ async def get_stats() -> dict:
     return {"memory_turns": memory_turns, "vector_count": vector_count}
 
 
-@app.post("/chat", response_model=ChatResponse)
+@app.get("/status", dependencies=[Depends(require_token)])
+async def status() -> dict:
+    """Return which instance is primary and the latest heartbeat (Req 10.2)."""
+    hb = read_heartbeat()
+    now = datetime.now(timezone.utc)
+    if hb is not None and (now - hb) <= timedelta(hours=PRESENCE_WINDOW_HOURS):
+        primary = "local"
+    else:
+        primary = "cloud"
+    return {
+        "primary": primary,
+        "heartbeat_utc": hb.isoformat() if hb else None,
+        "presence_window_hours": PRESENCE_WINDOW_HOURS,
+    }
+
+
+@app.post(
+    "/chat",
+    response_model=ChatResponse,
+    dependencies=[Depends(require_token), Depends(enforce_rate_limit)],
+)
 async def chat(request: ChatRequest) -> ChatResponse:
     """
     Core conversation endpoint.
@@ -443,7 +472,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
     return response
 
 
-@app.post("/memory/clear")
+@app.post("/memory/clear", dependencies=[Depends(require_token)])
 async def memory_clear() -> dict:
     """
     Clear conversation memory.
@@ -463,7 +492,7 @@ async def memory_clear() -> dict:
         return {"status": "error", "message": "Failed to clear conversation memory. Records preserved."}
 
 
-@app.post("/knowledge/update")
+@app.post("/knowledge/update", dependencies=[Depends(require_token)])
 async def knowledge_update() -> dict:
     """
     Trigger knowledge base rebuild from the latest NotebookLM export.
@@ -494,6 +523,102 @@ async def knowledge_update() -> dict:
             status_code=500,
             detail="Failed to rebuild knowledge base. Check logs for details.",
         )
+
+
+async def _sync_import_background(
+    my_export: SyncPayload, peer_payload: SyncPayload
+) -> None:
+    """Merge the peer payload into our state and persist it, off the request.
+
+    Runs AFTER the HTTP response has been sent (FastAPI ``BackgroundTasks``),
+    so the caller never waits for the (slow, memory-bound) re-embedding on this
+    hardware. The heavy work -- ``merge`` + ``import_merged`` (batched re-embed,
+    turn upsert, drive-state reconcile) -- happens here.
+
+    Emits ``sync_import_bg_started`` / ``sync_import_bg_complete`` /
+    ``sync_import_bg_failed`` so progress and failures are visible in the logs.
+    A failure only aborts this background import; ``import_merged`` is the last
+    mutating step and any earlier failure is a no-op against local storage, so
+    local state is never left partially corrupted.
+    """
+    logger.info(
+        "sync_import_bg_started",
+        peer_instance=peer_payload.instance_id,
+        peer_chunks=len(peer_payload.knowledge_chunks),
+        peer_turns=len(peer_payload.conversation_records),
+    )
+    try:
+        result = merge(my_export, peer_payload)
+        await import_merged(result)
+        logger.info(
+            "sync_import_bg_complete",
+            peer_instance=peer_payload.instance_id,
+            knowledge_chunks=len(result.knowledge_chunks),
+            conversation_records=len(result.conversation_records),
+            **result.stats,
+        )
+    except Exception as exc:  # noqa: BLE001 -- never crash the worker
+        logger.error(
+            "sync_import_bg_failed",
+            peer_instance=peer_payload.instance_id,
+            error=str(exc),
+            exc_info=True,
+        )
+
+
+@app.post("/sync/exchange", dependencies=[Depends(require_token)])
+async def sync_exchange(
+    peer_payload: SyncPayload, background_tasks: BackgroundTasks
+) -> SyncPayload:
+    """
+    Bi-directional HTTPS sync exchange endpoint (token-gated).
+
+    This is the server side of the HTTPS sync transport that replaces the
+    Google Drive relay. It is role-agnostic: whoever is called plays this
+    part. The caller POSTs its own :class:`SyncPayload`; we return the payload
+    representing OUR pre-exchange contribution so the caller can merge it, and
+    we merge + import the peer's payload into our own state in the BACKGROUND.
+
+    Why background: re-embedding hundreds of chunks with sentence-transformers
+    on a 1GB-RAM cloud VM takes minutes -- far longer than any reasonable HTTP
+    timeout. Holding the connection open for the whole import guaranteed a
+    client timeout (and previously a late 500). Instead we:
+
+      1. ``my_export = await export_state()`` -- snapshot THIS instance's state
+         (fast: it reads, it does NOT embed).
+      2. Schedule ``_sync_import_background(my_export, peer_payload)`` to run
+         after the response is sent (``merge`` + ``import_merged``).
+      3. Return ``my_export`` immediately with HTTP 200 -- the response is only
+         the small pre-exchange snapshot, so the round-trip transfers JSON and
+         returns in seconds. Both sides then embed on their own time.
+
+    Convergence is preserved: local sends its state, cloud returns its
+    pre-exchange state, and each side imports the other's. ``import_merged``
+    upserts chunks by id and turns by namespaced ``sync_id``, so re-running the
+    exchange is idempotent (no duplicates, no runaway growth).
+
+    Only ``export_state`` runs inside the request; if it fails we return HTTP
+    500 and nothing has been mutated. Background import failures are logged
+    (``sync_import_bg_failed``) and never corrupt local state.
+    """
+    try:
+        my_export = await export_state()
+    except Exception as exc:  # noqa: BLE001 -- surface a clean 500, never leak state
+        logger.error("sync_exchange_failed", error=str(exc), exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Sync exchange failed. Local state left unchanged.",
+        )
+
+    # Schedule the heavy merge + import to run after the response is sent.
+    background_tasks.add_task(_sync_import_background, my_export, peer_payload)
+    logger.info(
+        "sync_exchange_accepted",
+        peer_instance=peer_payload.instance_id,
+        my_chunks=len(my_export.knowledge_chunks),
+        my_turns=len(my_export.conversation_records),
+    )
+    return my_export
 
 
 # ---------------------------------------------------------------------------
