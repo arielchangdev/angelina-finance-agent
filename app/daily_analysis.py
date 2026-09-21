@@ -695,8 +695,10 @@ async def main():
     if success:
         print("  ✓ Report sent to Telegram successfully")
         # Best-effort heartbeat stamp AFTER a successful daily push (Req 3.1).
-        # Isolated so any heartbeat failure never breaks or blocks the push.
-        if HEARTBEAT_ENABLED:
+        # ONLY the local instance may stamp the "local presence" heartbeat.
+        # If the cloud (failover) instance stamped it, it would look like local
+        # is alive and the cloud would skip the NEXT day (every-other-day gap).
+        if HEARTBEAT_ENABLED and os.getenv("INSTANCE_ROLE", "local") == "local":
             try:
                 write_heartbeat()
                 print("  ✓ Heartbeat stamped (local presence recorded)")
