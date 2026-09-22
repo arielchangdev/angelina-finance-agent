@@ -20,6 +20,7 @@ app secrets (P-E), plus the VM itself (Task 11.1).
 | File | Task | Purpose |
 |---|---|---|
 | `setup-swap.sh` | 11.2 | Idempotent 2GB `/swapfile` (fallocate→dd fallback), `mkswap`, `swapon`, persist in `/etc/fstab`. |
+| `setup-timezone.sh` | — | Set the VM timezone to `Asia/Taipei` so the failover `0 23` cron fires at Taiwan 23:00 (GCP defaults to UTC). Idempotent; restarts crond. |
 | `angelina-cloud.service` | 12.2 | systemd unit mirroring local, but `ExecStart` binds uvicorn to **127.0.0.1** (never public). |
 | `cloud-crontab` | 12.2 | Cron fragment: 23:00 `failover.run_daily_push`, 06:00 `sync_engine.run_sync`. |
 | `install-cloud-cron.sh` | 12.2 | Idempotent, confirmation-gated cron installer (appends only missing lines). |
@@ -52,20 +53,26 @@ this VM — never `local`.**
 > Prereq: the VM exists (Task 11.1), you can SSH in as `angelina`, and you have
 > reviewed every file above.
 
-1. **Swap first** (before the RAM-heavy app is installed):
+1. **Set timezone** (so the failover `0 23` cron fires at Taiwan 23:00, not UTC 23:00):
+   ```bash
+   bash setup-timezone.sh
+   date   # expect CST (+0800)
+   ```
+
+2. **Swap** (before the RAM-heavy app is installed):
    ```bash
    bash setup-swap.sh
    swapon --show   # expect >= 2G
    ```
 
-2. **App deploy** (Task 12.1 — separate): clone repo to `/opt/angelina`, create
+3. **App deploy** (Task 12.1 — separate): clone repo to `/opt/angelina`, create
    `venv`, `pip install -r requirements.txt`, copy `config/service-account.json`.
 
-3. **.env with secrets**: write `/opt/angelina/.env` with `INSTANCE_ROLE=cloud`,
+4. **.env with secrets**: write `/opt/angelina/.env` with `INSTANCE_ROLE=cloud`,
    `INSTANCE_ID=cloud`, `ANGELINA_ACCESS_TOKEN`, `DUCKDNS_TOKEN`,
    `ANGELINA_SYNC_FOLDER_ID`, Gemini key, Telegram token. Keep it out of git.
 
-4. **systemd**: install the unit and start the service.
+5. **systemd**: install the unit and start the service.
    ```bash
    sudo cp angelina-cloud.service /etc/systemd/system/angelina.service
    sudo systemctl daemon-reload
@@ -73,13 +80,13 @@ this VM — never `local`.**
    systemctl status angelina
    ```
 
-5. **Cron** (failover push + sync):
+6. **Cron** (failover push + sync):
    ```bash
    bash install-cloud-cron.sh --dry-run   # preview
    bash install-cloud-cron.sh             # apply (asks y/N)
    ```
 
-6. **DuckDNS**: place the updater and schedule it.
+7. **DuckDNS**: place the updater and schedule it.
    ```bash
    sudo mkdir -p /opt/angelina/deploy
    sudo cp duckdns-update.sh /opt/angelina/deploy/duckdns-update.sh
@@ -89,7 +96,7 @@ this VM — never `local`.**
    crontab -l 2>/dev/null | { cat; cat duckdns-cron; } | crontab -
    ```
 
-7. **Caddy** (last — needs the DuckDNS name resolving and 80/443 reachable):
+8. **Caddy** (last — needs the DuckDNS name resolving and 80/443 reachable):
    ```bash
    export CADDY_EMAIL='<operator-acme-email>'   # or set it in /etc/caddy/caddy.env
    bash install-caddy.sh

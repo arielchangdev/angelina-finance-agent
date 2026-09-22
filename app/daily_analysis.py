@@ -305,14 +305,32 @@ async def generate_report(market_data, knowledge, is_weekend=False):
                 "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens}
             }
             resp = None
-            for attempt in range(3):
-                resp = await client.post(url, json=payload, timeout=120)
+            # Resilient retry: 5 attempts with capped backoff (20/40/60/90/120s)
+            # to ride out transient Google-side 503s / 429s / network blips.
+            _MAX_ATTEMPTS = 5
+            _BACKOFFS = [20, 40, 60, 90, 120]
+            for attempt in range(_MAX_ATTEMPTS):
+                try:
+                    resp = await client.post(url, json=payload, timeout=120)
+                except Exception as _e:
+                    # Network-level error (timeout, connection reset, DNS...).
+                    resp = None
+                    if attempt < _MAX_ATTEMPTS - 1:
+                        wait = _BACKOFFS[attempt]
+                        print(f"  [RETRY] {model_name} network error ({_e.__class__.__name__}), waiting {wait}s ({attempt+1}/{_MAX_ATTEMPTS})")
+                        await asyncio.sleep(wait)
+                        continue
+                    else:
+                        break
                 if resp.status_code == 200:
                     break
-                elif resp.status_code in (503, 429):
-                    wait = 20 * (attempt + 1)
-                    print(f"  [RETRY] {model_name} returned {resp.status_code}, waiting {wait}s ({attempt+1}/3)")
-                    await asyncio.sleep(wait)
+                elif resp.status_code in (503, 429, 500, 502, 504):
+                    if attempt < _MAX_ATTEMPTS - 1:
+                        wait = _BACKOFFS[attempt]
+                        print(f"  [RETRY] {model_name} returned {resp.status_code}, waiting {wait}s ({attempt+1}/{_MAX_ATTEMPTS})")
+                        await asyncio.sleep(wait)
+                    else:
+                        print(f"  [RETRY] {model_name} returned {resp.status_code}, giving up after {_MAX_ATTEMPTS} attempts")
                 else:
                     break
 
