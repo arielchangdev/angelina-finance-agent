@@ -1,0 +1,70 @@
+---
+# ===========================================================================
+# report.yml — emit the JSON artifact + Markdown report. READ-ONLY output.
+# ===========================================================================
+# The only write to the managed host is a single JSON file under /tmp (the
+# artifact the future AI-narration layer consumes). We also render Markdown and
+# fetch BOTH to the controller so the operator can read them off-host.
+# NO secret values are ever written — findings contain only metadata/status.
+# ===========================================================================
+
+- name: Assemble the full audit document
+  ansible.builtin.set_fact:
+    audit_document:
+      schema: "angelina.security-audit/v1"
+      host: "{{ inventory_hostname }}"
+      deployment: "{{ deployment | default('unknown') }}"
+      os: "{{ ansible_distribution | default('') }} {{ ansible_distribution_version | default('') }}"
+      generated_utc: "{{ audit_meta.generated_utc }}"
+      summary: "{{ audit_summary }}"
+      findings: "{{ audit_findings }}"
+  tags: [audit]
+
+# --- JSON artifact on the managed host (the only write; /tmp temp file) ------
+- name: "Write JSON artifact to /tmp on the managed host"
+  ansible.builtin.copy:
+    content: "{{ audit_document | to_nice_json }}\n"
+    dest: "/tmp/angelina_audit_{{ inventory_hostname }}.json"
+    mode: "0600"
+  changed_when: false
+  tags: [audit]
+
+# --- Fetch JSON back to the controller --------------------------------------
+- name: "Ensure local report directory exists (on controller)"
+  ansible.builtin.file:
+    path: "{{ playbook_dir }}/audit_reports"
+    state: directory
+    mode: "0755"
+  delegate_to: localhost
+  become: false
+  run_once: false
+  changed_when: false
+  tags: [audit]
+
+- name: "Fetch JSON artifact to the controller"
+  ansible.builtin.fetch:
+    src: "/tmp/angelina_audit_{{ inventory_hostname }}.json"
+    dest: "{{ playbook_dir }}/audit_reports/{{ inventory_hostname }}.json"
+    flat: true
+  changed_when: false
+  tags: [audit]
+
+# --- Render Markdown on the controller (no host write) ----------------------
+- name: "Render Markdown report on the controller"
+  ansible.builtin.template:
+    src: report.md.j2
+    dest: "{{ playbook_dir }}/audit_reports/{{ inventory_hostname }}.md"
+    mode: "0644"
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  tags: [audit]
+
+- name: "Audit summary for {{ inventory_hostname }}"
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }} ({{ deployment | default('?') }}):
+      {{ audit_summary.RISK }} RISK, {{ audit_summary.WARN }} WARN,
+      {{ audit_summary.OK }} OK, {{ audit_summary.INFO }} INFO.
+      Report -> audit_reports/{{ inventory_hostname }}.md
+  tags: [audit]

@@ -1,0 +1,156 @@
+---
+# ===========================================================================
+# collect.yml — gather raw security state. READ-ONLY.
+# ===========================================================================
+# Each register captures raw output; score.yml turns it into OK/WARN/RISK.
+# Commands are wrapped so a missing tool or empty grep never aborts the audit.
+# ===========================================================================
+
+# --- 1. Listening TCP ports -------------------------------------------------
+- name: "1. Listening TCP ports (ss -tlnp)"
+  ansible.builtin.command: ss -Htlnp
+  register: audit_ss
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  tags: [audit, ports]
+
+# --- 2. SSH hardening (effective sshd config) -------------------------------
+- name: "2. Effective sshd config (sshd -T)"
+  # sshd -T prints the fully-resolved effective config without touching it.
+  ansible.builtin.shell: "set -o pipefail; sshd -T 2>/dev/null | grep -iE '^(passwordauthentication|permitrootlogin|pubkeyauthentication|kbdinteractiveauthentication|challengeresponseauthentication) '"
+  args:
+    executable: /bin/bash
+  register: audit_sshd
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  tags: [audit, ssh]
+
+# --- 3. SELinux -------------------------------------------------------------
+- name: "3. SELinux enforcement (getenforce)"
+  ansible.builtin.command: getenforce
+  register: audit_selinux
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  tags: [audit, selinux]
+
+# --- 4. firewalld -----------------------------------------------------------
+- name: "4a. firewalld state (firewall-cmd --state)"
+  ansible.builtin.command: firewall-cmd --state
+  register: audit_fw_state
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  tags: [audit, firewall]
+
+- name: "4b. firewalld active zone config (firewall-cmd --list-all)"
+  ansible.builtin.command: firewall-cmd --list-all
+  register: audit_fw_listall
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: audit_fw_state.stdout | default('') == 'running'
+  tags: [audit, firewall]
+
+# --- 5. Pending security updates -------------------------------------------
+- name: "5. Pending security updates (dnf updateinfo)"
+  # Cached metadata only (-C) with a hard timeout so we never hit the network or
+  # stall prod; if that yields nothing usable, fall back to a quick summary.
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    timeout 45 dnf -q --cacheonly updateinfo list security 2>/dev/null
+    || timeout 45 dnf -q updateinfo summary 2>/dev/null
+    || true
+  args:
+    executable: /bin/bash
+  register: audit_updates
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  tags: [audit, updates]
+
+# --- 6. Sensitive file perms (existence + mode + owner ONLY) ----------------
+# NOTE: ansible.builtin.stat reads METADATA only. We deliberately do NOT use
+# slurp/cat on these files — their contents are secrets and never leave the host.
+- name: "6a. stat /opt/angelina/.env (metadata only, never contents)"
+  ansible.builtin.stat:
+    path: /opt/angelina/.env
+  register: audit_env
+  changed_when: false
+  tags: [audit, files]
+
+- name: "6b. stat /opt/angelina/config/service-account.json (metadata only)"
+  ansible.builtin.stat:
+    path: /opt/angelina/config/service-account.json
+  register: audit_sa
+  changed_when: false
+  tags: [audit, files]
+
+# --- 7. Cron entries (surface only, no auto-flagging) -----------------------
+- name: "7a. crontab -l for the angelina user"
+  ansible.builtin.command: crontab -l -u angelina
+  register: audit_cron_angelina
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  tags: [audit, cron]
+
+- name: "7b. crontab -l for root"
+  ansible.builtin.command: crontab -l -u root
+  register: audit_cron_root
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  tags: [audit, cron]
+
+# --- 8. Failed SSH logins in the last 7 days --------------------------------
+- name: "8. Failed SSH login count (journalctl, last 7 days)"
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    journalctl -u sshd --since '7 days ago' --no-pager 2>/dev/null
+    | grep -Ec 'Failed password|authentication failure' || true
+  args:
+    executable: /bin/bash
+  register: audit_failed_ssh
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  tags: [audit, logins]
+
+# --- 9. Angelina service status ---------------------------------------------
+- name: "9a. systemctl is-active angelina.service"
+  ansible.builtin.command: systemctl is-active angelina.service
+  register: audit_svc_active
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  tags: [audit, service]
+
+- name: "9b. systemctl is-enabled angelina.service"
+  ansible.builtin.command: systemctl is-enabled angelina.service
+  register: audit_svc_enabled
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  tags: [audit, service]
+
+# --- 10. Timezone + uptime (INFO context) -----------------------------------
+- name: "10a. Timezone (timedatectl)"
+  ansible.builtin.shell: "set -o pipefail; timedatectl show -p Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || true"
+  args:
+    executable: /bin/bash
+  register: audit_tz
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  tags: [audit, context]
+
+- name: "10b. Uptime (uptime -p)"
+  ansible.builtin.command: uptime -p
+  register: audit_uptime
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  tags: [audit, context]

@@ -1,0 +1,37 @@
+---
+# ===========================================================================
+# Angelina Hybrid Cloud — READ-ONLY security-audit playbook.
+# ===========================================================================
+# Collects the security posture of BOTH Angelina VMs (local production RHEL and
+# cloud Rocky), applies rule-based risk scoring, and produces per-host:
+#   * a structured JSON artifact  -> /tmp/angelina_audit_<inventory_hostname>.json
+#   * a human-readable Markdown report (also fetched to the controller)
+#
+# This is the DATA-COLLECTION layer for a future AI-narration step. The AI part
+# is intentionally NOT built here — a later stage will consume the JSON.
+#
+# ---------------------------------------------------------------------------
+# STRICTLY READ-ONLY. This playbook only GATHERS/READS state:
+#   ss, sshd -T, getenforce, firewall-cmd --state/--list-all, dnf updateinfo,
+#   stat/ls, crontab -l, systemctl is-active/is-enabled, journalctl (read).
+# It NEVER changes config, restarts services, installs/removes packages, or
+# writes to managed hosts except ONE temp JSON file under /tmp that is left for
+# the operator to inspect (and cleaned up out of band). It NEVER reads or prints
+# secret VALUES: sensitive files are inspected with `stat` only (existence +
+# mode + owner), never `cat`/`slurp` of their contents.
+# ---------------------------------------------------------------------------
+# Run:
+#   # validate without connecting
+#   ansible-playbook --syntax-check -i inventory.audit.example.ini audit.yml
+#   # real run (read-only, safe) against both live VMs
+#   ansible-playbook -i inventory.audit.ini audit.yml
+# ===========================================================================
+- name: Angelina hybrid-cloud READ-ONLY security audit
+  hosts: angelina_hosts
+  gather_facts: true
+  # become is needed for root-only reads (firewall-cmd, dnf updateinfo, sshd -T,
+  # root crontab, journalctl). All escalated commands are still read-only.
+  become: true
+
+  roles:
+    - role: security_audit

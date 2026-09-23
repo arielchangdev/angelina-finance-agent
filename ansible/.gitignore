@@ -18,3 +18,8 @@ files/service-account.json
 # Vault password files, if any.
 .vault_pass
 .vault_pass.txt
+
+# Real audit inventory (only inventory.audit.example.ini is committed).
+inventory.audit.ini
+# Generated audit reports (JSON + Markdown) - regenerated on each run.
+audit_reports/

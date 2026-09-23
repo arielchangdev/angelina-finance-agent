@@ -1,24 +1,35 @@
-# Angelina Hybrid Cloud — Caddyfile for the Cloud_Instance (Task 12.4)
+# Angelina Hybrid Cloud - Caddyfile for the Cloud Instance
 # ---------------------------------------------------------------------------
-# STAGED ARTIFACT — not installed on any VM. Install to /etc/caddy/Caddyfile
-# on the cloud VM (see install-caddy.sh / README.md).
-#
 # Caddy terminates HTTPS (automatic Let's Encrypt for the DuckDNS name) and
 # reverse-proxies to Angelina bound on loopback 127.0.0.1:8080. Angelina's
-# 8080 is never exposed publicly; only 80 (ACME challenge) and 443 (HTTPS)
-# are opened at the firewall (Req 8.1, 8.4, 8.7).
+# 8080 is never exposed publicly; only 80 (ACME) and 443 (HTTPS) are open.
 #
-# ACME EMAIL — REQUIRED, DO NOT hardcode a real address here.
-# Caddy needs an ACME contact email for Let's Encrypt. Supply it as the
-# CADDY_EMAIL environment variable (e.g. in /etc/caddy/caddy.env referenced by
-# the caddy systemd unit, or exported before `caddy run`). The global option
-# below reads {$CADDY_EMAIL}. If you prefer, replace {$CADDY_EMAIL} with the
-# operator's real address directly — but keep it OUT of version control.
-
+# /audit is a token-protected, static self-audit report served directly by
+# Caddy from /opt/angelina/static/audit (basic_auth; the app is untouched).
+#
+# ACME EMAIL - supply via the CADDY_EMAIL environment variable (e.g. in
+# /etc/caddy/caddy.env referenced by the caddy systemd unit) or replace
+# {$CADDY_EMAIL} with the operator's real address directly - but keep the real
+# address OUT of version control.
+#
+# BASIC AUTH HASH - the /audit route is protected with HTTP basic auth. The
+# password is the shared Access Token (the same one the Chat UI uses). Generate
+# the bcrypt hash ON THE HOST and paste it below (the hash is one-way and safe
+# to store; the plaintext token must never be committed):
+#     caddy hash-password --plaintext '<THE_ACCESS_TOKEN>'
+# Replace YOUR_BCRYPT_TOKEN_HASH with the resulting $2a$... string.
 {
 	email {$CADDY_EMAIL}
 }
-
 YOUR_SUBDOMAIN.duckdns.org {
-	reverse_proxy 127.0.0.1:8080
+	handle_path /audit* {
+		basic_auth {
+			angelina YOUR_BCRYPT_TOKEN_HASH
+		}
+		root * /opt/angelina/static/audit
+		file_server
+	}
+	handle {
+		reverse_proxy 127.0.0.1:8080
+	}
 }

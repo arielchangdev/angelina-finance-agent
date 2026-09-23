@@ -1,0 +1,29 @@
+---
+# ===========================================================================
+# security_audit — READ-ONLY collection of the host security posture.
+# ===========================================================================
+# Every task here is read-only. Command/shell tasks use `changed_when: false`
+# and tolerate non-zero rc where a missing tool/empty result is normal, so the
+# audit never reports a false "changed" and never fails a whole run on one gap.
+# Findings are gathered into `audit` facts, scored in score.yml, then emitted.
+# ===========================================================================
+
+- name: Initialise the findings accumulator
+  ansible.builtin.set_fact:
+    audit_findings: []
+    audit_meta:
+      deployment: "{{ deployment | default('unknown') }}"
+      generated_utc: "{{ ansible_date_time.iso8601 }}"
+  tags: [audit]
+
+- name: Collect all read-only security dimensions
+  ansible.builtin.import_tasks: collect.yml
+  tags: [audit]
+
+- name: Apply rule-based risk scoring
+  ansible.builtin.import_tasks: score.yml
+  tags: [audit]
+
+- name: Emit JSON + Markdown artifacts
+  ansible.builtin.import_tasks: report.yml
+  tags: [audit]

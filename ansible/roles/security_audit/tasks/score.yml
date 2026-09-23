@@ -1,0 +1,358 @@
+---
+# ===========================================================================
+# score.yml — rule-based risk scoring. Pure logic, no host mutation.
+# ===========================================================================
+# Turns the raw registers from collect.yml into a list of findings, each:
+#   { id, dimension, title, status(OK|WARN|RISK|INFO), value, detail }
+# Context-aware: `deployment` (local|cloud) changes some rules, e.g. 8080 and
+# password auth are acceptable on the LAN-facing local VM but risky on cloud.
+# ===========================================================================
+
+- name: Set convenience facts
+  ansible.builtin.set_fact:
+    _is_cloud: "{{ (deployment | default('unknown')) == 'cloud' }}"
+    _is_local: "{{ (deployment | default('unknown')) == 'local' }}"
+    # Failed-login WARN threshold (tunable via inventory/extra-vars).
+    _failed_login_threshold: "{{ failed_login_warn_threshold | default(50) | int }}"
+    # Ports allowed to be public-bound without a flag.
+    _allowed_public_ports: "{{ ['22', '80', '443'] }}"
+  tags: [audit]
+
+# --- 1. Listening ports -----------------------------------------------------
+# Parse `ss -Htlnp` lines. Column 4 is Local Address:Port. A port is "public"
+# if bound to 0.0.0.0, *, or [::]/:: (as opposed to 127.0.0.1 / [::1]).
+- name: "Score: listening ports"
+  vars:
+    _ss_lines: "{{ (audit_ss.stdout | default('')).splitlines() | select('match', '.*:.*') | list }}"
+    # ss -Htlnp columns: State Recv-Q Send-Q LocalAddr:Port PeerAddr:Port Process.
+    # Capture field 4 (the LOCAL listen address:port) — NOT the peer column.
+    _ports: >-
+      {{ _ss_lines
+         | map('regex_replace', '^\s*\S+\s+\S+\s+\S+\s+(\S+)\s+\S+.*$', '\1')
+         | list }}
+  block:
+    - name: "Score: derive public non-standard ports"
+      ansible.builtin.set_fact:
+        _public_ports: >-
+          {{ _ports
+             | select('search', '^(0\.0\.0\.0|\*|\[::\]|::):')
+             | map('regex_replace', '.*:(\d+)$', '\1')
+             | reject('in', _allowed_public_ports)
+             | list }}
+        _has_public_8080: >-
+          {{ _ports | select('search', '^(0\.0\.0\.0|\*|\[::\]|::):8080$') | list | length > 0 }}
+        _has_localhost_8080: >-
+          {{ _ports | select('search', '^(127\.0\.0\.1|\[::1\]|::1):8080$') | list | length > 0 }}
+
+    - name: "Score: 8080 binding finding (context-aware)"
+      ansible.builtin.set_fact:
+        _finding_8080: >-
+          {{
+            {'id': 'ports_8080', 'dimension': 'Listening ports',
+             'title': 'Angelina app port 8080 binding'}
+            | combine(
+                (_is_cloud and _has_public_8080) | ternary(
+                  {'status': 'RISK', 'value': '8080 bound to a public address',
+                   'detail': 'On the cloud VM 8080 must be bound to 127.0.0.1 behind Caddy; a public 8080 exposes the app directly.'},
+                (_is_cloud and _has_localhost_8080) | ternary(
+                  {'status': 'OK', 'value': '8080 bound to 127.0.0.1',
+                   'detail': 'Cloud app correctly bound to localhost behind Caddy.'},
+                (_is_local and _has_public_8080) | ternary(
+                  {'status': 'INFO', 'value': '8080 bound to a public/LAN address',
+                   'detail': 'Local VM binds 8080 on 0.0.0.0 for LAN access by design — expected, not a risk.'},
+                (_has_localhost_8080) | ternary(
+                  {'status': 'OK', 'value': '8080 bound to 127.0.0.1',
+                   'detail': 'App bound to localhost.'},
+                  {'status': 'INFO', 'value': '8080 not detected as listening',
+                   'detail': 'No 8080 listener seen in ss output; the app may bind elsewhere or was not listening at scan time.'})))) )
+          }}
+
+    - name: "Score: other public non-standard ports finding"
+      ansible.builtin.set_fact:
+        _finding_ports: >-
+          {{
+            {'id': 'ports_public', 'dimension': 'Listening ports',
+             'title': 'Public-bound non-standard ports'}
+            | combine(
+                (_public_ports | reject('equalto', '8080') | list | length > 0) | ternary(
+                  {'status': (_is_cloud | ternary('RISK', 'WARN')),
+                   'value': 'Public ports (excl. 22/80/443/8080): ' ~ (_public_ports | reject('equalto', '8080') | list | join(', ')),
+                   'detail': 'Ports bound to a public address other than the expected 22/80/443. Review whether they should be firewalled or bound to localhost.'},
+                  {'status': 'OK', 'value': 'Only expected ports public (22/80/443' ~ (_is_local | ternary(' + 8080 LAN', '') ) ~ ')',
+                   'detail': 'No unexpected public-bound listeners detected.'}) )
+          }}
+
+    - name: "Score: append port findings"
+      ansible.builtin.set_fact:
+        audit_findings: "{{ audit_findings + [_finding_8080, _finding_ports] }}"
+  tags: [audit, ports]
+
+# --- 2. SSH hardening -------------------------------------------------------
+- name: "Score: parse sshd effective values"
+  vars:
+    _sshd: "{{ audit_sshd.stdout | default('') | lower }}"
+  ansible.builtin.set_fact:
+    _ssh_passwordauth: "{{ 'passwordauthentication yes' in _sshd }}"
+    _ssh_permitroot: "{{ (_sshd | regex_search('permitrootlogin (\\S+)', '\\1') | default(['unknown'], true) | first) }}"
+    _ssh_pubkey: "{{ 'pubkeyauthentication yes' in _sshd }}"
+    _ssh_kbdint: "{{ 'kbdinteractiveauthentication yes' in _sshd }}"
+  tags: [audit, ssh]
+
+- name: "Score: SSH password authentication finding"
+  ansible.builtin.set_fact:
+    _finding_ssh_pw: >-
+      {{
+        {'id': 'ssh_password_auth', 'dimension': 'SSH hardening',
+         'title': 'SSH password authentication'}
+        | combine(
+            (not _ssh_passwordauth) | ternary(
+              {'status': 'OK', 'value': 'passwordauthentication=no',
+               'detail': 'Password auth disabled; key-based auth only.'},
+            _is_cloud | ternary(
+              {'status': 'RISK', 'value': 'passwordauthentication=yes',
+               'detail': 'The internet-facing cloud VM allows SSH password auth — should be key-only.'},
+              {'status': 'WARN', 'value': 'passwordauthentication=yes',
+               'detail': 'Local VM allows SSH password auth. Acceptable on a trusted LAN but weaker than key-only.'})) )
+      }}
+  tags: [audit, ssh]
+
+- name: "Score: SSH root login + other findings"
+  ansible.builtin.set_fact:
+    _finding_ssh_root: >-
+      {{
+        {'id': 'ssh_permit_root', 'dimension': 'SSH hardening',
+         'title': 'SSH root login (PermitRootLogin)'}
+        | combine(
+            (_ssh_permitroot == 'yes') | ternary(
+              {'status': 'RISK', 'value': 'permitrootlogin=yes',
+               'detail': 'Direct root SSH login is enabled — should be no or prohibit-password.'},
+            (_ssh_permitroot == 'unknown') | ternary(
+              {'status': 'WARN', 'value': 'permitrootlogin=unknown',
+               'detail': 'Could not determine PermitRootLogin from sshd -T.'},
+              {'status': 'OK', 'value': 'permitrootlogin=' ~ _ssh_permitroot,
+               'detail': 'Direct root SSH login is not fully open.'})) )
+      }}
+    _finding_ssh_pubkey: >-
+      {{
+        {'id': 'ssh_pubkey', 'dimension': 'SSH hardening',
+         'title': 'SSH public-key authentication'}
+        | combine(
+            _ssh_pubkey | ternary(
+              {'status': 'OK', 'value': 'pubkeyauthentication=yes', 'detail': 'Key-based auth enabled.'},
+              {'status': 'WARN', 'value': 'pubkeyauthentication=no', 'detail': 'Public-key auth appears disabled.'}) )
+      }}
+  tags: [audit, ssh]
+
+- name: "Score: append SSH findings"
+  ansible.builtin.set_fact:
+    audit_findings: "{{ audit_findings + [_finding_ssh_pw, _finding_ssh_root, _finding_ssh_pubkey] }}"
+  tags: [audit, ssh]
+
+# --- 3. SELinux -------------------------------------------------------------
+- name: "Score: SELinux finding"
+  vars:
+    _se: "{{ (audit_selinux.stdout | default('') | trim | lower) }}"
+  ansible.builtin.set_fact:
+    _finding_selinux: >-
+      {{
+        {'id': 'selinux', 'dimension': 'SELinux', 'title': 'SELinux enforcement mode'}
+        | combine(
+            (_se == 'enforcing') | ternary(
+              {'status': 'OK', 'value': 'enforcing', 'detail': 'SELinux is enforcing.'},
+            (_se == 'permissive') | ternary(
+              {'status': 'WARN', 'value': 'permissive', 'detail': 'SELinux logs but does not block — enable enforcing.'},
+            (_se == 'disabled') | ternary(
+              {'status': 'RISK', 'value': 'disabled', 'detail': 'SELinux is disabled — no mandatory access control.'},
+              {'status': 'WARN', 'value': _se | default('unknown', true), 'detail': 'Could not read SELinux mode.'}))) )
+      }}
+  tags: [audit, selinux]
+
+- name: "Score: append SELinux finding"
+  ansible.builtin.set_fact:
+    audit_findings: "{{ audit_findings + [_finding_selinux] }}"
+  tags: [audit, selinux]
+
+# --- 4. firewalld -----------------------------------------------------------
+- name: "Score: firewalld finding"
+  vars:
+    _fw: "{{ audit_fw_state.stdout | default('') | trim }}"
+    # Match only the rest of the SAME line ([ \t]*, not \s*, so it never crosses
+    # a newline into the next field). '\bports:' avoids matching 'source-ports:'.
+    # Pull the specific line then strip the label — avoids regex backref crashes
+    # when a field is absent (regex_search with a group errors on no-match).
+    _fw_lines: "{{ (audit_fw_listall.stdout | default('')).splitlines() | map('trim') | list }}"
+    _fw_ports: "{{ (_fw_lines | select('match', '^ports:') | list | first | default('ports:')) | regex_replace('^ports:', '') | trim }}"
+    _fw_services: "{{ (_fw_lines | select('match', '^services:') | list | first | default('services:')) | regex_replace('^services:', '') | trim }}"
+    _fw_zone: "{{ (_fw_lines | select('match', '^\\S+\\s+\\(') | list | first | default('default (')) | regex_replace('\\s+\\(.*$', '') | trim }}"
+  ansible.builtin.set_fact:
+    _finding_firewall: >-
+      {{
+        {'id': 'firewalld', 'dimension': 'firewalld',
+         'title': 'Host firewall (firewalld)'}
+        | combine(
+            (_fw == 'running') | ternary(
+              {'status': 'OK', 'value': 'running (zone: ' ~ _fw_zone ~ ')',
+               'detail': 'Open services: ' ~ ((_fw_services | length > 0) | ternary(_fw_services, '(none)')) ~ ' | Open ports: ' ~ ((_fw_ports | length > 0) | ternary(_fw_ports, '(none)'))},
+            _is_cloud | ternary(
+              {'status': 'INFO', 'value': 'not running',
+               'detail': 'firewalld not running; the cloud VM also relies on the GCP network firewall (VPC rules) for perimeter control.'},
+              {'status': 'WARN', 'value': 'not running',
+               'detail': 'Host firewall is not running on the local VM.'})) )
+      }}
+  tags: [audit, firewall]
+
+- name: "Score: append firewalld finding"
+  ansible.builtin.set_fact:
+    audit_findings: "{{ audit_findings + [_finding_firewall] }}"
+  tags: [audit, firewall]
+
+# --- 5. Pending security updates -------------------------------------------
+- name: "Score: security updates finding"
+  vars:
+    _upd_raw: "{{ audit_updates.stdout | default('') }}"
+    # Count advisory lines that look like security updates; ignore headers.
+    _upd_count: >-
+      {{ _upd_raw.splitlines()
+         | select('search', '(?i)(sec|security|important|moderate|critical|low)')
+         | reject('search', '(?i)updateinfo|summary|last metadata|available|Security:? *$')
+         | list | length }}
+  ansible.builtin.set_fact:
+    _finding_updates: >-
+      {{
+        {'id': 'security_updates', 'dimension': 'Patch level',
+         'title': 'Pending security updates'}
+        | combine(
+            (_upd_raw | trim | length == 0) | ternary(
+              {'status': 'INFO', 'value': 'no cached updateinfo available',
+               'detail': 'dnf security metadata was not available from cache within the timeout; run a manual dnf check-update out of band.'},
+            (_upd_count | int > 0) | ternary(
+              {'status': 'WARN', 'value': (_upd_count | string) ~ ' security-related advisory line(s)',
+               'detail': 'Pending security updates detected. Schedule patching out of band (this audit does not patch).'},
+              {'status': 'OK', 'value': '0 pending security updates',
+               'detail': 'No pending security advisories found in cached metadata.'})) )
+      }}
+  tags: [audit, updates]
+
+- name: "Score: append updates finding"
+  ansible.builtin.set_fact:
+    audit_findings: "{{ audit_findings + [_finding_updates] }}"
+  tags: [audit, updates]
+
+# --- 6. Sensitive file permissions -----------------------------------------
+- name: "Score: sensitive file findings (metadata only)"
+  ansible.builtin.set_fact:
+    _finding_env: "{{ lookup('template', 'score_file.j2', template_vars={'st': audit_env, 'fid': 'file_env', 'path': '/opt/angelina/.env'}) | from_yaml }}"
+    _finding_sa: "{{ lookup('template', 'score_file.j2', template_vars={'st': audit_sa, 'fid': 'file_sa', 'path': '/opt/angelina/config/service-account.json'}) | from_yaml }}"
+  tags: [audit, files]
+
+- name: "Score: append file findings"
+  ansible.builtin.set_fact:
+    audit_findings: "{{ audit_findings + [_finding_env, _finding_sa] }}"
+  tags: [audit, files]
+
+# --- 7. Cron (surface only) -------------------------------------------------
+- name: "Score: cron finding (surfaced, not auto-flagged)"
+  vars:
+    _cron_a: "{{ (audit_cron_angelina.rc | default(1) == 0) | ternary(audit_cron_angelina.stdout | default(''), '') }}"
+    _cron_r: "{{ (audit_cron_root.rc | default(1) == 0) | ternary(audit_cron_root.stdout | default(''), '') }}"
+    _cron_a_lines: "{{ _cron_a.splitlines() | reject('match', '^\\s*#') | reject('match', '^\\s*$') | list }}"
+    _cron_r_lines: "{{ _cron_r.splitlines() | reject('match', '^\\s*#') | reject('match', '^\\s*$') | list }}"
+  ansible.builtin.set_fact:
+    _finding_cron: >-
+      {{
+        {'id': 'cron', 'dimension': 'Cron', 'title': 'Scheduled jobs (operator review)',
+         'status': 'INFO',
+         'value': (_cron_a_lines | length | string) ~ ' angelina + ' ~ (_cron_r_lines | length | string) ~ ' root cron entries',
+         'detail': 'Surfaced for manual review; not auto-flagged.',
+         'cron_angelina': _cron_a_lines,
+         'cron_root': _cron_r_lines}
+      }}
+  tags: [audit, cron]
+
+- name: "Score: append cron finding"
+  ansible.builtin.set_fact:
+    audit_findings: "{{ audit_findings + [_finding_cron] }}"
+  tags: [audit, cron]
+
+# --- 8. Failed SSH logins ---------------------------------------------------
+- name: "Score: failed SSH login finding"
+  vars:
+    _fails: "{{ (audit_failed_ssh.stdout | default('0') | trim | regex_search('\\d+') | default('0', true)) | int }}"
+  ansible.builtin.set_fact:
+    _finding_logins: >-
+      {{
+        {'id': 'failed_logins', 'dimension': 'Auth logs',
+         'title': 'Failed SSH logins (last 7 days)'}
+        | combine(
+            (_fails > (_failed_login_threshold | int)) | ternary(
+              {'status': 'WARN', 'value': (_fails | string) ~ ' failed attempts',
+               'detail': 'Above the ' ~ (_failed_login_threshold | string) ~ ' threshold — likely brute-force noise. Consider fail2ban/key-only auth if not already.'},
+              {'status': 'OK', 'value': (_fails | string) ~ ' failed attempts',
+               'detail': 'Below the ' ~ (_failed_login_threshold | string) ~ ' threshold.'}) )
+      }}
+  tags: [audit, logins]
+
+- name: "Score: append login finding"
+  ansible.builtin.set_fact:
+    audit_findings: "{{ audit_findings + [_finding_logins] }}"
+  tags: [audit, logins]
+
+# --- 9. Angelina service ----------------------------------------------------
+- name: "Score: angelina.service finding"
+  vars:
+    _active: "{{ audit_svc_active.stdout | default('') | trim }}"
+    _enabled: "{{ audit_svc_enabled.stdout | default('') | trim }}"
+  ansible.builtin.set_fact:
+    _finding_service: >-
+      {{
+        {'id': 'angelina_service', 'dimension': 'Application service',
+         'title': 'angelina.service state'}
+        | combine(
+            (_active == 'active' and _enabled == 'enabled') | ternary(
+              {'status': 'OK', 'value': 'active + enabled', 'detail': 'Service is running and enabled at boot.'},
+            (_active == 'active') | ternary(
+              {'status': 'WARN', 'value': 'active but ' ~ (_enabled | default('not enabled', true)),
+               'detail': 'Service running but not enabled at boot — it will not survive a reboot.'},
+              {'status': 'RISK', 'value': (_active | default('inactive', true)) ~ ' / ' ~ (_enabled | default('unknown', true)),
+               'detail': 'Angelina application service is not active.'})) )
+      }}
+  tags: [audit, service]
+
+- name: "Score: append service finding"
+  ansible.builtin.set_fact:
+    audit_findings: "{{ audit_findings + [_finding_service] }}"
+  tags: [audit, service]
+
+# --- 10. Context (timezone + uptime) ---------------------------------------
+- name: "Score: context findings"
+  ansible.builtin.set_fact:
+    _finding_tz:
+      id: timezone
+      dimension: Context
+      title: Timezone
+      status: INFO
+      value: "{{ audit_tz.stdout | default('unknown') | trim }}"
+      detail: "Host timezone (informational)."
+    _finding_uptime:
+      id: uptime
+      dimension: Context
+      title: Uptime
+      status: INFO
+      value: "{{ audit_uptime.stdout | default('unknown') | trim }}"
+      detail: "Host uptime (informational)."
+  tags: [audit, context]
+
+- name: "Score: append context findings"
+  ansible.builtin.set_fact:
+    audit_findings: "{{ audit_findings + [_finding_tz, _finding_uptime] }}"
+  tags: [audit, context]
+
+# --- Overall risk summary ---------------------------------------------------
+- name: "Score: compute severity counts"
+  ansible.builtin.set_fact:
+    audit_summary:
+      RISK: "{{ audit_findings | selectattr('status', 'equalto', 'RISK') | list | length }}"
+      WARN: "{{ audit_findings | selectattr('status', 'equalto', 'WARN') | list | length }}"
+      OK: "{{ audit_findings | selectattr('status', 'equalto', 'OK') | list | length }}"
+      INFO: "{{ audit_findings | selectattr('status', 'equalto', 'INFO') | list | length }}"
+  tags: [audit]

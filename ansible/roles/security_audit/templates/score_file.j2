@@ -1,0 +1,36 @@
+{#- score_file.j2 — render a sensitive-file finding from a stat result. -#}
+{#- Uses METADATA only (st.stat.mode/pw_name/gr_name). NEVER file contents. -#}
+{#- Expected mode 0600 owned by 'angelina'. RISK if group/world readable.    -#}
+{%- set s = st.stat -%}
+id: "{{ fid }}"
+dimension: "Sensitive files"
+title: "Permissions of {{ path }}"
+{% if not s.exists %}
+status: "WARN"
+value: "missing"
+detail: "{{ path }} does not exist on this host. Expected if the feature is unused; otherwise investigate."
+{% else %}
+{%- set mode = s.mode -%}
+{%- set owner = s.pw_name | default('?') -%}
+{%- set group = s.gr_name | default('?') -%}
+{%- set group_readable = mode[2] in ['4','5','6','7'] -%}
+{%- set world_readable = mode[3] in ['4','5','6','7'] -%}
+{%- set owner_ok = (owner == 'angelina') -%}
+{%- if world_readable or group_readable -%}
+status: "RISK"
+value: "mode {{ mode }} owner {{ owner }}:{{ group }}"
+detail: "{{ path }} is group/world readable. Secrets must be 0600. Tighten to owner-only (chmod 600, chown angelina)."
+{%- elif (mode[2] == '0' and mode[3] == '0') and owner_ok -%}
+status: "OK"
+value: "mode {{ mode }} owner {{ owner }}:{{ group }}"
+detail: "Permissions are owner-only (group/world = 0) and owned by angelina, as expected. Contents were NOT read."
+{%- elif not owner_ok -%}
+status: "WARN"
+value: "mode {{ mode }} owner {{ owner }}:{{ group }}"
+detail: "Not group/world readable, but owner is {{ owner }} (expected angelina). Verify ownership."
+{%- else -%}
+status: "OK"
+value: "mode {{ mode }} owner {{ owner }}:{{ group }}"
+detail: "Not group/world readable. Contents were NOT read."
+{%- endif -%}
+{% endif %}
