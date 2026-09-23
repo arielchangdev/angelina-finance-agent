@@ -1,0 +1,16 @@
+# {{ ansible_managed }}
+# Angelina Hybrid Cloud — Caddyfile for the Cloud_Instance.
+# Caddy terminates HTTPS (automatic Let's Encrypt for the DuckDNS name) and
+# reverse-proxies to Angelina on loopback 127.0.0.1:8080. 8080 is never exposed
+# publicly; only 80 (ACME challenge) and 443 (HTTPS) are open at the firewall.
+#
+# The ACME contact email is read from the CADDY_EMAIL environment variable
+# (supplied via /etc/caddy/caddy.env). No real email is hardcoded here.
+
+{
+	email {$CADDY_EMAIL}
+}
+
+{{ duckdns_subdomain }}.duckdns.org {
+	reverse_proxy {{ angelina_host }}:{{ angelina_port }}
+}

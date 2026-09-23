@@ -1,0 +1,42 @@
+---
+# ===========================================================================
+# firewall — in-VM firewalld: allow only 22/80/443 (Step 3 of the runbook).
+# ===========================================================================
+# NOTE: the GCP *network* firewall rule (22/80/443 + tag) is created via gcloud
+# OUT OF SCOPE for this in-VM playbook — see README.md. This role only manages
+# the on-VM firewalld when it is present/active.
+#
+# Angelina's port 8080 is deliberately NOT opened: the systemd unit binds
+# uvicorn to 127.0.0.1 so 8080 is loopback-only and never exposed. Only Caddy
+# reaches it over loopback.
+# ===========================================================================
+
+- name: Check whether firewalld is installed
+  ansible.builtin.command: rpm -q firewalld
+  register: firewalld_pkg
+  changed_when: false
+  failed_when: false
+
+- name: Ensure firewalld is running and enabled (only if installed)
+  ansible.builtin.systemd:
+    name: firewalld
+    state: started
+    enabled: true
+  when: firewalld_pkg.rc == 0
+
+- name: Allow only 22/80/443 ingress via firewalld
+  ansible.posix.firewalld:
+    service: "{{ item }}"
+    permanent: true
+    immediate: true
+    state: enabled
+  loop: "{{ firewall_allowed_services }}"
+  when: firewalld_pkg.rc == 0
+
+- name: Note when firewalld is absent (GCP network firewall governs ingress)
+  ansible.builtin.debug:
+    msg: >-
+      firewalld is not installed on this host; skipping in-VM firewall config.
+      Ingress is then governed by the GCP network firewall rule (22/80/443),
+      which is created via gcloud out-of-band. See README.md.
+  when: firewalld_pkg.rc != 0

@@ -1,0 +1,21 @@
+[Unit]
+# {{ ansible_managed }}
+# Angelina Hybrid Cloud — Cloud_Instance systemd unit.
+# ExecStart binds uvicorn to 127.0.0.1 (NOT 0.0.0.0): on the cloud, port 8080
+# must never be exposed publicly — only Caddy reverse-proxies over loopback.
+Description=Angelina AI Finance Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ angelina_user }}
+WorkingDirectory={{ angelina_home }}
+EnvironmentFile={{ angelina_env_file }}
+ExecStart={{ angelina_venv_dir }}/bin/uvicorn app.main:app --host {{ angelina_host }} --port {{ angelina_port }}
+Restart=always
+RestartSec=5
+MemoryMax={{ angelina_memory_max }}
+
+[Install]
+WantedBy=multi-user.target

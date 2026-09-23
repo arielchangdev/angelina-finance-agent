@@ -1,0 +1,7 @@
+---
+# Restart crond so scheduled jobs pick up the new timezone immediately
+# (matches setup-timezone.sh which restarts crond after set-timezone).
+- name: Restart crond
+  ansible.builtin.systemd:
+    name: crond
+    state: restarted

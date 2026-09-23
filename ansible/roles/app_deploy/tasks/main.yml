@@ -1,0 +1,153 @@
+---
+# ===========================================================================
+# app_deploy — python3.11, venv, deps, code, service-account, .env (Step 5+6).
+# ===========================================================================
+# Mirrors the working prod deploy:
+#   * install python3.11 + python3.11-devel + gcc + gcc-c++ (base pkgs come
+#     from the common role; python packages here).
+#   * create /opt/angelina/{app,config,data,deploy} owned by 'angelina'.
+#   * deploy app code (git clone OR tarball, via angelina_app_source).
+#   * create the venv with python3.11.
+#   * pip install CPU-only torch FIRST (avoids pulling CUDA torch), then
+#     requirements.txt, then gspread google-auth, then pysqlite3-binary.
+#   * install a venv sitecustomize.py that swaps stdlib sqlite3 for pysqlite3
+#     (chromadb needs sqlite>=3.35; RHEL9 ships 3.34).
+#   * copy config/service-account.json (a secret) from a controlled path.
+#   * template /opt/angelina/.env (mode 600, owner angelina) from vars.
+# ===========================================================================
+
+# --- Python 3.11 ----------------------------------------------------------
+- name: Install Python 3.11 and dev headers
+  ansible.builtin.dnf:
+    name:
+      - "{{ angelina_python_pkg }}"
+      - "{{ angelina_python_devel_pkg }}"
+    state: present
+
+# --- Directory layout -----------------------------------------------------
+- name: Create the Angelina directory tree
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ angelina_user }}"
+    group: "{{ angelina_group }}"
+    mode: "0755"
+  loop:
+    - "{{ angelina_home }}"
+    - "{{ angelina_app_dir }}"
+    - "{{ angelina_config_dir }}"
+    - "{{ angelina_data_dir }}"
+    - "{{ angelina_deploy_dir }}"
+
+# --- App code: git clone --------------------------------------------------
+- name: Deploy app code from git
+  ansible.builtin.git:
+    repo: "{{ angelina_app_git_repo }}"
+    dest: "{{ angelina_home }}"
+    version: "{{ angelina_app_git_version }}"
+    # Do not clobber local runtime data (data/, config/, .env, venv/) on re-run.
+    update: true
+    force: false
+  become_user: "{{ angelina_user }}"
+  when: angelina_app_source == "git"
+
+# --- App code: tarball ----------------------------------------------------
+- name: Deploy app code from tarball
+  ansible.builtin.unarchive:
+    src: "{{ angelina_app_tarball_src }}"
+    dest: "{{ angelina_home }}"
+    owner: "{{ angelina_user }}"
+    group: "{{ angelina_group }}"
+    # unarchive is not idempotent by content; guarded by the assert below.
+  when: angelina_app_source == "tarball"
+
+- name: Validate app source selection
+  ansible.builtin.assert:
+    that:
+      - angelina_app_source in ["git", "tarball"]
+      - (angelina_app_source != "tarball") or (angelina_app_tarball_src | length > 0)
+    fail_msg: >-
+      Set angelina_app_source to 'git' or 'tarball'. When 'tarball', also set
+      angelina_app_tarball_src to a path on the controller.
+
+# --- Virtualenv -----------------------------------------------------------
+- name: Create the Python 3.11 virtualenv
+  ansible.builtin.command: "{{ angelina_python }} -m venv {{ angelina_venv_dir }}"
+  args:
+    creates: "{{ angelina_venv_dir }}/bin/python"
+  become_user: "{{ angelina_user }}"
+
+- name: Upgrade pip / setuptools / wheel in the venv
+  ansible.builtin.pip:
+    name:
+      - pip
+      - setuptools
+      - wheel
+    state: latest
+    virtualenv: "{{ angelina_venv_dir }}"
+  become_user: "{{ angelina_user }}"
+
+# --- CPU-only torch FIRST (avoid pulling CUDA torch) ----------------------
+- name: Install CPU-only torch before requirements (avoids CUDA build)
+  ansible.builtin.pip:
+    name: torch
+    virtualenv: "{{ angelina_venv_dir }}"
+    extra_args: "--index-url {{ torch_cpu_index_url }}"
+  become_user: "{{ angelina_user }}"
+
+# --- Project requirements -------------------------------------------------
+- name: Install project requirements.txt
+  ansible.builtin.pip:
+    requirements: "{{ angelina_home }}/requirements.txt"
+    virtualenv: "{{ angelina_venv_dir }}"
+  become_user: "{{ angelina_user }}"
+
+# --- Extra runtime deps (match prod) --------------------------------------
+- name: Install extra runtime deps (gspread, google-auth, pysqlite3-binary)
+  ansible.builtin.pip:
+    name:
+      - gspread
+      - google-auth
+      - pysqlite3-binary
+    virtualenv: "{{ angelina_venv_dir }}"
+  become_user: "{{ angelina_user }}"
+
+# --- sitecustomize: swap stdlib sqlite3 for pysqlite3 ----------------------
+- name: Discover the venv site-packages directory
+  ansible.builtin.command: >-
+    {{ angelina_venv_dir }}/bin/python -c
+    "import sysconfig; print(sysconfig.get_paths()['purelib'])"
+  register: venv_site_packages
+  changed_when: false
+  become_user: "{{ angelina_user }}"
+
+- name: Install sitecustomize.py (chromadb sqlite>=3.35 shim)
+  ansible.builtin.template:
+    src: sitecustomize.py.j2
+    dest: "{{ venv_site_packages.stdout | trim }}/sitecustomize.py"
+    owner: "{{ angelina_user }}"
+    group: "{{ angelina_group }}"
+    mode: "0644"
+
+# --- Service account credential (a secret) --------------------------------
+- name: Copy Google service-account.json (skipped if no source configured)
+  ansible.builtin.copy:
+    src: "{{ service_account_json_src }}"
+    dest: "{{ angelina_config_dir }}/service-account.json"
+    owner: "{{ angelina_user }}"
+    group: "{{ angelina_group }}"
+    mode: "0600"
+  when:
+    - service_account_json_src is defined
+    - service_account_json_src | length > 0
+    - not (service_account_json_src is search('^YOUR_'))
+
+# --- .env from template (mode 600) ----------------------------------------
+- name: Template /opt/angelina/.env from Ansible vars (mode 0600)
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ angelina_env_file }}"
+    owner: "{{ angelina_user }}"
+    group: "{{ angelina_group }}"
+    mode: "0600"
+  notify: Restart angelina

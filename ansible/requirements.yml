@@ -1,0 +1,18 @@
+---
+# Angelina Hybrid Cloud — Ansible collection dependencies.
+#
+# Install on the controller before running the playbook:
+#   ansible-galaxy collection install -r requirements.yml
+#
+# Only the collections actually referenced by the roles are listed:
+#   * ansible.posix        -> ansible.posix.firewalld (firewall role)
+#   * community.general    -> community.general.timezone (common role)
+#
+# Everything else uses ansible.builtin (dnf, systemd, template, copy,
+# lineinfile, cron, user, file, get_url, pip, git, command) so the dependency
+# surface stays small.
+collections:
+  - name: ansible.posix
+    version: ">=1.5.0"
+  - name: community.general
+    version: ">=8.0.0"

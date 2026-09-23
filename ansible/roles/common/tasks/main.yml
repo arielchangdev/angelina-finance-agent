@@ -1,0 +1,42 @@
+---
+# ===========================================================================
+# common — timezone + base packages (Step 1 of the manual runbook).
+# ===========================================================================
+# Mirrors setup-timezone.sh: set the VM timezone to Asia/Taipei so the failover
+# "0 23 * * *" cron fires at Taiwan 23:00 (GCP VMs default to UTC). crond is
+# restarted (via handler) so the scheduler picks up the new timezone.
+# ===========================================================================
+
+- name: Set system timezone
+  community.general.timezone:
+    name: "{{ angelina_timezone }}"
+  notify: Restart crond
+
+- name: Ensure base build packages are present
+  ansible.builtin.dnf:
+    name: "{{ angelina_base_packages }}"
+    state: present
+
+- name: Ensure the angelina group exists
+  ansible.builtin.group:
+    name: "{{ angelina_group }}"
+    system: false
+    state: present
+
+- name: Ensure the angelina service user exists
+  ansible.builtin.user:
+    name: "{{ angelina_user }}"
+    group: "{{ angelina_group }}"
+    home: "{{ angelina_home }}"
+    create_home: false
+    shell: /bin/bash
+    system: false
+    state: present
+
+- name: Ensure the runtime log directory exists
+  ansible.builtin.file:
+    path: "{{ angelina_log_dir }}"
+    state: directory
+    owner: "{{ angelina_user }}"
+    group: "{{ angelina_group }}"
+    mode: "0755"

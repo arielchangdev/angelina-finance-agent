@@ -1,0 +1,72 @@
+---
+# ===========================================================================
+# Angelina Hybrid Cloud — NON-SECRET defaults.
+# ===========================================================================
+# Safe to commit. All real secrets live in the git-ignored vault.yml
+# (template: vault.example.yml). Nothing here is sensitive.
+# ===========================================================================
+
+# --- System ---------------------------------------------------------------
+angelina_timezone: "Asia/Taipei"     # so the 0 23 failover cron fires at TW 23:00 (GCP defaults to UTC)
+swap_size_mb: 2048                    # 2GB swap for the 1GB-RAM e2-micro
+
+# --- Identity / user ------------------------------------------------------
+angelina_user: "angelina"
+angelina_group: "angelina"
+
+# --- Paths ----------------------------------------------------------------
+angelina_home: "/opt/angelina"
+angelina_app_dir: "/opt/angelina/app"
+angelina_config_dir: "/opt/angelina/config"
+angelina_data_dir: "/opt/angelina/data"
+angelina_deploy_dir: "/opt/angelina/deploy"
+angelina_venv_dir: "/opt/angelina/venv"
+angelina_env_file: "/opt/angelina/.env"
+angelina_log_dir: "/var/log/angelina"
+
+# --- Python / runtime -----------------------------------------------------
+angelina_python: "python3.11"
+angelina_python_pkg: "python3.11"
+angelina_python_devel_pkg: "python3.11-devel"
+angelina_base_packages:
+  - "gcc"
+  - "gcc-c++"
+  - "git"
+  - "curl"
+
+# --- App source (configurable) --------------------------------------------
+# Choose how the app code arrives on the VM:
+#   git     -> clone angelina_app_git_repo @ angelina_app_git_version
+#   tarball -> unpack angelina_app_tarball_src (a path on the controller)
+angelina_app_source: "git"
+angelina_app_git_repo: "https://github.com/arielchangdev/angelina-finance-agent.git"
+angelina_app_git_version: "main"
+# Only used when angelina_app_source == "tarball":
+angelina_app_tarball_src: ""          # e.g. "/home/ariel/angelina.tar.gz" on the controller
+
+# --- Torch (CPU-only) -----------------------------------------------------
+# Installed BEFORE requirements.txt so pip doesn't pull the CUDA build.
+torch_cpu_index_url: "https://download.pytorch.org/whl/cpu"
+
+# --- Non-secret app config (goes into .env) -------------------------------
+instance_role: "cloud"                # cloud VM is passive/failover — never "local"
+instance_id: "cloud"
+angelina_host: "127.0.0.1"            # 8080 is loopback-only; only Caddy reaches it
+angelina_port: 8080
+angelina_log_level: "INFO"
+
+# --- Firewall -------------------------------------------------------------
+# In-VM firewalld ingress. GCP network firewall (22/80/443) is created via
+# gcloud out-of-band — see README.md. 8080 is intentionally NOT listed.
+firewall_allowed_services:
+  - "ssh"    # 22
+  - "http"   # 80  (ACME HTTP-01 challenge)
+  - "https"  # 443 (Caddy HTTPS)
+
+# --- DuckDNS (domain is non-secret; the token is a secret in vault.yml) ----
+# Full name: "{{ duckdns_subdomain }}.duckdns.org"
+duckdns_subdomain: "YOUR_DUCKDNS_SUBDOMAIN"
+
+# --- systemd --------------------------------------------------------------
+angelina_service_name: "angelina"
+angelina_memory_max: "2G"

@@ -1,0 +1,26 @@
+---
+# ===========================================================================
+# systemd_service — install + enable angelina.service (Step 7 of the runbook).
+# ===========================================================================
+# Mirrors angelina-cloud.service: Type=simple, User=angelina,
+# WorkingDirectory=/opt/angelina, EnvironmentFile=/opt/angelina/.env,
+# ExecStart binds uvicorn to 127.0.0.1:8080 (never public), Restart=always,
+# RestartSec=5, MemoryMax=2G, WantedBy=multi-user.target.
+# daemon-reload happens automatically after the template changes.
+# ===========================================================================
+
+- name: Install the angelina systemd unit
+  ansible.builtin.template:
+    src: angelina.service.j2
+    dest: "/etc/systemd/system/{{ angelina_service_name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd and restart angelina
+
+- name: Enable and start angelina
+  ansible.builtin.systemd:
+    name: "{{ angelina_service_name }}"
+    enabled: true
+    state: started
+    daemon_reload: true

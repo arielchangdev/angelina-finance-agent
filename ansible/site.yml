@@ -1,0 +1,59 @@
+---
+# ===========================================================================
+# Angelina Hybrid Cloud — one-command VM provisioning playbook.
+# ===========================================================================
+# Turns the 8 manual provisioning steps into a single, idempotent, re-runnable
+# playbook. Mirrors the reviewed staged artifacts in
+# deploy/hybrid/cloud/ (timezone, swap, firewalld, SSH hardening, app deploy,
+# .env, systemd unit, cron, DuckDNS updater, Caddy).
+#
+# TARGET: a FRESH GCP Rocky Linux 9 e2-micro VM. Do NOT run against the live
+# production VM — it is running and must not be disrupted.
+#
+# Run:
+#   ansible-galaxy collection install -r requirements.yml
+#   ansible-playbook -i inventory.ini site.yml
+#
+# Validate without connecting:
+#   ansible-playbook --syntax-check -i inventory.example.ini site.yml
+#
+# Run a subset via tags, e.g.:
+#   ansible-playbook -i inventory.ini site.yml --tags caddy
+# ===========================================================================
+- name: Provision the Angelina Cloud_Instance
+  hosts: cloud
+  gather_facts: true
+  become: true
+
+  # Secrets come from the git-ignored vault; non-secret defaults from vars.yml.
+  # (group_vars/all/*.yml is auto-loaded for the 'all' group; listed here for
+  # clarity and so a missing real vault fails loudly at parse time.)
+  pre_tasks:
+    - name: Assert secrets vault is present (fail early with a clear message)
+      ansible.builtin.assert:
+        that:
+          - gemini_api_key is defined
+          - angelina_access_token is defined
+        fail_msg: >-
+          Missing secrets. Copy group_vars/all/vault.example.yml to
+          group_vars/all/vault.yml and fill in the real values before running.
+        success_msg: "Secrets vault detected."
+      tags: [always]
+
+  roles:
+    - role: common
+      tags: [common, base]
+    - role: swap
+      tags: [swap]
+    - role: firewall
+      tags: [firewall]
+    - role: ssh_hardening
+      tags: [ssh, hardening]
+    - role: app_deploy
+      tags: [app, deploy]
+    - role: systemd_service
+      tags: [systemd, service]
+    - role: cron_jobs
+      tags: [cron, duckdns]
+    - role: caddy
+      tags: [caddy, tls]

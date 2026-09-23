@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# ===========================================================================
+# Angelina Hybrid Cloud — DuckDNS A-record updater.
+# ===========================================================================
+# Keeps {{ duckdns_subdomain }}.duckdns.org pointed at the VM's current
+# ephemeral GCP public IP. Reads DUCKDNS_TOKEN from {{ angelina_env_file }}
+# (never hardcoded, never printed). ip= is left blank so DuckDNS auto-detects
+# the caller's public IP. Logs OK/KO to {{ angelina_log_dir }}/duckdns.log.
+# ===========================================================================
+set -euo pipefail
+
+ENV_FILE="{{ angelina_env_file }}"
+DOMAIN_LABEL="{{ duckdns_subdomain }}"
+LOG_DIR="{{ angelina_log_dir }}"
+LOG_FILE="${LOG_DIR}/duckdns.log"
+
+mkdir -p "${LOG_DIR}" 2>/dev/null || true
+
+TS="$(date -u +%Y-%m-%dT%H:%M:%S%z)"
+
+if [[ ! -r "${ENV_FILE}" ]]; then
+    echo "${TS} KO cannot read ${ENV_FILE}" >> "${LOG_FILE}"
+    echo "KO"
+    exit 1
+fi
+
+# Extract only DUCKDNS_TOKEN without sourcing the whole file (safer than
+# `source`). Strips an optional surrounding quote pair.
+DUCKDNS_TOKEN="$(grep -E '^[[:space:]]*DUCKDNS_TOKEN=' "${ENV_FILE}" | tail -n1 | cut -d= -f2- | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'$/\1/")"
+
+if [[ -z "${DUCKDNS_TOKEN}" ]]; then
+    echo "${TS} KO DUCKDNS_TOKEN not set in ${ENV_FILE}" >> "${LOG_FILE}"
+    echo "KO"
+    exit 1
+fi
+
+# --data-urlencode keeps the token off the argv/process list. ip= blank ->
+# DuckDNS auto-detects the caller's public IP (picks up the ephemeral IP).
+RESPONSE="$(curl -s -G "https://www.duckdns.org/update" \
+    --data-urlencode "domains=${DOMAIN_LABEL}" \
+    --data-urlencode "token=${DUCKDNS_TOKEN}" \
+    --data-urlencode "ip=" || true)"
+
+if [[ "${RESPONSE}" == "OK" ]]; then
+    echo "${TS} OK duckdns update for ${DOMAIN_LABEL}" >> "${LOG_FILE}"
+    echo "OK"
+    exit 0
+else
+    echo "${TS} KO duckdns response='${RESPONSE:-<empty>}' for ${DOMAIN_LABEL}" >> "${LOG_FILE}"
+    echo "KO"
+    exit 1
+fi

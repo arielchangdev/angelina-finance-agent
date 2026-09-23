@@ -1,0 +1,54 @@
+---
+# ===========================================================================
+# ssh_hardening — sshd drop-in (Step 4 of the manual runbook).
+# ===========================================================================
+# Installs /etc/ssh/sshd_config.d/60-angelina-hardening.conf:
+#   PubkeyAuthentication yes
+#   PasswordAuthentication no
+#   ChallengeResponseAuthentication no
+#   KbdInteractiveAuthentication no
+#   PermitRootLogin no
+# Validates the whole config with `sshd -t` BEFORE reloading, and only reloads
+# via handler (so a bad config never takes down the running sshd).
+#
+# !!! CAUTION !!!
+# This DISABLES password authentication. The operator SSH public key MUST be
+# installed for the 'angelina' user BEFORE this role runs, or you will lock
+# yourself out. The safety guard below refuses to proceed unless an
+# authorized_keys entry exists.
+# ===========================================================================
+
+- name: Safety guard — ensure an SSH public key is already authorized
+  block:
+    - name: Stat the connecting user's authorized_keys
+      ansible.builtin.stat:
+        path: "{{ angelina_home }}/.ssh/authorized_keys"
+      register: authk
+
+    - name: Fail fast if no authorized key is present (would lock out on pw-off)
+      ansible.builtin.assert:
+        that:
+          - authk.stat.exists
+          - authk.stat.size | default(0) | int > 0
+        fail_msg: >-
+          Refusing to disable password auth: no
+          {{ angelina_home }}/.ssh/authorized_keys found for '{{ angelina_user }}'.
+          Install the operator SSH public key first (e.g. via ansible.posix.authorized_key
+          or gcloud metadata) then re-run --tags ssh.
+        success_msg: "Authorized SSH key present — safe to harden sshd."
+  # Allow the operator to explicitly bypass the guard if they manage keys
+  # another way (e.g. GCP OS Login): -e ssh_hardening_force=true
+  when: not (ssh_hardening_force | default(false) | bool)
+
+- name: Install the Angelina sshd hardening drop-in
+  ansible.builtin.template:
+    src: 60-angelina-hardening.conf.j2
+    dest: /etc/ssh/sshd_config.d/60-angelina-hardening.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart sshd
+
+- name: Validate the effective sshd configuration (full config, incl. drop-ins)
+  ansible.builtin.command: /usr/sbin/sshd -t
+  changed_when: false

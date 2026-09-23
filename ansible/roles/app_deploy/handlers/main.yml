@@ -1,0 +1,9 @@
+---
+# Restart the app when its .env changes. Guarded: only if the unit is already
+# installed (the systemd_service role installs/enables it). If the unit isn't
+# present yet on a first run, this is a no-op and systemd_service starts it.
+- name: Restart angelina
+  ansible.builtin.systemd:
+    name: "{{ angelina_service_name }}"
+    state: restarted
+  failed_when: false

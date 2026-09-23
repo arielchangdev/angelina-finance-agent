@@ -1,0 +1,64 @@
+---
+# ===========================================================================
+# cron_jobs — failover push cron + DuckDNS updater + cron (Step 8 of runbook).
+# ===========================================================================
+# Installs (for the 'angelina' user):
+#   * 23:00 daily  -> app.failover.run_daily_push (role-gated; cloud only
+#     pushes when the local instance is classified offline). Fires at Taiwan
+#     23:00 because the common role set the timezone to Asia/Taipei.
+#   * DuckDNS updater script -> /opt/angelina/deploy/duckdns-update.sh
+#   * */5 * * * *  -> duckdns-update.sh
+#   * @reboot      -> duckdns-update.sh (ephemeral IP may change after stop/start)
+#
+# Each python cron entry sources the .env first
+# (set -a && . /opt/angelina/.env && set +a) because cron runs with a minimal
+# environment and the app needs the secrets/config from .env.
+#
+# The 06:00 bi-directional sync cron is intentionally NOT installed on the
+# cloud: the LOCAL instance initiates the HTTPS sync to the cloud, so the cloud
+# side is passive. (Documented here so the omission is deliberate, not missed.)
+# ===========================================================================
+
+- name: Ensure the log directory exists (cron jobs log here)
+  ansible.builtin.file:
+    path: "{{ angelina_log_dir }}"
+    state: directory
+    owner: "{{ angelina_user }}"
+    group: "{{ angelina_group }}"
+    mode: "0755"
+
+# --- 23:00 failover daily push --------------------------------------------
+- name: Install 23:00 failover daily-push cron (sources .env first)
+  ansible.builtin.cron:
+    name: "angelina failover daily push"
+    user: "{{ angelina_user }}"
+    minute: "0"
+    hour: "23"
+    job: >-
+      cd {{ angelina_home }} && set -a && . {{ angelina_env_file }} && set +a &&
+      {{ angelina_venv_dir }}/bin/python -c
+      "import asyncio; from app.failover import run_daily_push; asyncio.run(run_daily_push())"
+      >> {{ angelina_log_dir }}/daily.log 2>&1
+
+# --- DuckDNS updater script -----------------------------------------------
+- name: Install the DuckDNS updater script
+  ansible.builtin.template:
+    src: duckdns-update.sh.j2
+    dest: "{{ angelina_deploy_dir }}/duckdns-update.sh"
+    owner: "{{ angelina_user }}"
+    group: "{{ angelina_group }}"
+    mode: "0755"
+
+- name: Install DuckDNS updater cron (every 5 minutes)
+  ansible.builtin.cron:
+    name: "angelina duckdns update every 5 min"
+    user: "{{ angelina_user }}"
+    minute: "*/5"
+    job: "{{ angelina_deploy_dir }}/duckdns-update.sh >/dev/null 2>&1"
+
+- name: Install DuckDNS updater cron (at boot)
+  ansible.builtin.cron:
+    name: "angelina duckdns update at reboot"
+    user: "{{ angelina_user }}"
+    special_time: reboot
+    job: "{{ angelina_deploy_dir }}/duckdns-update.sh >/dev/null 2>&1"

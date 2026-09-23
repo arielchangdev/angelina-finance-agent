@@ -1,0 +1,65 @@
+---
+# ===========================================================================
+# swap — idempotent 2GB /swapfile (Step 2 of the manual runbook).
+# ===========================================================================
+# Mirrors setup-swap.sh: create a 2GB /swapfile (fallocate, dd fallback),
+# chmod 600, mkswap, swapon, and persist in /etc/fstab (append only if absent).
+# Safe to re-run: guarded by swapon --show and file-existence checks.
+# ===========================================================================
+
+- name: Check whether /swapfile is already an active swap device
+  ansible.builtin.command: swapon --show=NAME --noheadings
+  register: swap_active
+  changed_when: false
+  failed_when: false
+
+- name: Set swap-active fact
+  ansible.builtin.set_fact:
+    swapfile_active: "{{ '/swapfile' in (swap_active.stdout | default('')) }}"
+
+- name: Check whether /swapfile exists
+  ansible.builtin.stat:
+    path: /swapfile
+  register: swapfile_stat
+
+- name: Allocate /swapfile via fallocate
+  ansible.builtin.command: "fallocate -l {{ swap_size_mb }}M /swapfile"
+  when:
+    - not swapfile_active
+    - not swapfile_stat.stat.exists
+  register: fallocate_result
+  changed_when: fallocate_result.rc == 0
+  failed_when: false
+
+- name: Allocate /swapfile via dd (fallback when fallocate failed)
+  ansible.builtin.command: "dd if=/dev/zero of=/swapfile bs=1M count={{ swap_size_mb }}"
+  when:
+    - not swapfile_active
+    - not swapfile_stat.stat.exists
+    - (fallocate_result is defined) and ((fallocate_result.rc | default(1)) != 0)
+  changed_when: true
+
+- name: Enforce 0600 permissions on /swapfile
+  ansible.builtin.file:
+    path: /swapfile
+    owner: root
+    group: root
+    mode: "0600"
+  when: not swapfile_active
+
+- name: Format the swap area (mkswap)
+  ansible.builtin.command: mkswap /swapfile
+  when: not swapfile_active
+  changed_when: true
+
+- name: Enable swap (swapon)
+  ansible.builtin.command: swapon /swapfile
+  when: not swapfile_active
+  changed_when: true
+
+- name: Persist /swapfile in /etc/fstab (append only if absent)
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    line: "/swapfile none swap sw 0 0"
+    regexp: '^\s*/swapfile\s+'
+    state: present

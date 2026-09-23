@@ -1,0 +1,83 @@
+---
+# ===========================================================================
+# caddy — install + Caddyfile + enable (Step 9 of the manual runbook).
+# ===========================================================================
+# Mirrors install-caddy.sh: install Caddy via the Rocky 9 COPR method, template
+# the Caddyfile (DuckDNS name -> reverse_proxy 127.0.0.1:8080, global ACME
+# email {$CADDY_EMAIL}), supply CADDY_EMAIL via /etc/caddy/caddy.env consumed
+# by the caddy unit, then enable --now. Config changes reload via handler.
+# ===========================================================================
+
+# --- Install Caddy (Rocky 9 COPR) -----------------------------------------
+- name: Check whether caddy is already installed
+  ansible.builtin.command: rpm -q caddy
+  register: caddy_pkg
+  changed_when: false
+  failed_when: false
+
+- name: Enable dnf COPR command support
+  ansible.builtin.dnf:
+    name: "dnf-command(copr)"
+    state: present
+  when: caddy_pkg.rc != 0
+
+- name: Enable the @caddy/caddy COPR repo
+  ansible.builtin.command: dnf copr enable -y @caddy/caddy
+  args:
+    creates: /etc/yum.repos.d/_copr:copr.fedorainfracloud.org:group_caddy:caddy.repo
+  when: caddy_pkg.rc != 0
+
+- name: Install caddy
+  ansible.builtin.dnf:
+    name: caddy
+    state: present
+  when: caddy_pkg.rc != 0
+
+# --- ACME email via EnvironmentFile ---------------------------------------
+- name: Provide CADDY_EMAIL to the caddy service via /etc/caddy/caddy.env
+  ansible.builtin.copy:
+    dest: /etc/caddy/caddy.env
+    content: "CADDY_EMAIL={{ caddy_email }}\n"
+    owner: root
+    group: root
+    mode: "0640"
+  notify: Reload caddy
+
+- name: Ensure the caddy systemd drop-in directory exists
+  ansible.builtin.file:
+    path: /etc/systemd/system/caddy.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Ensure the caddy unit loads /etc/caddy/caddy.env (drop-in override)
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/caddy.service.d/10-angelina-env.conf
+    content: |
+      # {{ ansible_managed }}
+      # Load CADDY_EMAIL so the Caddyfile's {$CADDY_EMAIL} resolves for ACME.
+      [Service]
+      EnvironmentFile=/etc/caddy/caddy.env
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd for caddy
+
+# --- Caddyfile ------------------------------------------------------------
+- name: Template the Caddyfile
+  ansible.builtin.template:
+    src: Caddyfile.j2
+    dest: /etc/caddy/Caddyfile
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload caddy
+
+# --- Enable + start -------------------------------------------------------
+- name: Enable and start caddy
+  ansible.builtin.systemd:
+    name: caddy
+    enabled: true
+    state: started
+    daemon_reload: true

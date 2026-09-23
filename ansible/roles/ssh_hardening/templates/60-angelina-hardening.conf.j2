@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+# Angelina Hybrid Cloud — sshd hardening drop-in.
+# Installed to /etc/ssh/sshd_config.d/60-angelina-hardening.conf.
+#
+# CAUTION: PasswordAuthentication is disabled. The operator public key MUST be
+# in ~angelina/.ssh/authorized_keys before this takes effect (the ssh_hardening
+# role enforces this with a safety guard).
+PubkeyAuthentication yes
+PasswordAuthentication no
+ChallengeResponseAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no

@@ -1,0 +1,46 @@
+---
+# ===========================================================================
+# Angelina Hybrid Cloud — SECRETS TEMPLATE.
+# ===========================================================================
+# COPY this file to group_vars/all/vault.yml (which is GIT-IGNORED) and replace
+# every YOUR_* placeholder with the real value. NEVER put real secrets in THIS
+# example file, and NEVER commit vault.yml.
+#
+#   cp group_vars/all/vault.example.yml group_vars/all/vault.yml
+#   # edit vault.yml -> fill in real values
+#
+# Optional but recommended — encrypt the real file at rest:
+#   ansible-vault encrypt group_vars/all/vault.yml
+#   ansible-playbook -i inventory.ini site.yml --ask-vault-pass
+# ===========================================================================
+
+# --- LLM ------------------------------------------------------------------
+gemini_api_key: "YOUR_GEMINI_API_KEY"
+
+# --- Telegram -------------------------------------------------------------
+telegram_bot_token: "YOUR_TELEGRAM_BOT_TOKEN"
+telegram_chat_id: "YOUR_TELEGRAM_CHAT_ID"
+
+# --- Cloud auth (the app refuses to start in cloud role if unset) ---------
+angelina_access_token: "YOUR_ANGELINA_ACCESS_TOKEN"
+
+# --- DuckDNS token (subdomain itself is in vars.yml, non-secret) ----------
+duckdns_token: "YOUR_DUCKDNS_TOKEN"
+
+# --- Google Sheets / Drive ids --------------------------------------------
+spreadsheet_id: "YOUR_SPREADSHEET_ID"
+drive_folder_id: "YOUR_DRIVE_FOLDER_ID"
+angelina_sync_folder_id: "YOUR_ANGELINA_SYNC_FOLDER_ID"
+
+# --- Caddy ACME contact email ---------------------------------------------
+caddy_email: "YOUR_CADDY_ACME_EMAIL"
+
+# --- GCP project (used only for documentation / optional gcloud tasks) ----
+gcp_project_id: "YOUR_GCP_PROJECT_ID"
+
+# --- service-account.json source -------------------------------------------
+# Path ON THE CONTROLLER to the Google service-account JSON credential file.
+# The file is a SECRET and must live outside git. It is copied to
+# {{ angelina_config_dir }}/service-account.json on the VM.
+# Leave blank to skip copying (e.g. if you place it on the VM manually).
+service_account_json_src: "YOUR_PATH_TO_service-account.json"

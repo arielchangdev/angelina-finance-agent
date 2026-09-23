@@ -1,0 +1,20 @@
+# Angelina Hybrid Cloud — never commit secrets or environment-specific files.
+
+# Real secrets vault (only vault.example.yml with YOUR_* placeholders is committed).
+group_vars/all/vault.yml
+secrets.yml
+
+# Real inventory (only inventory.example.ini is committed).
+inventory.ini
+
+# Ansible retry files.
+*.retry
+
+# Service-account credentials (a secret — supplied by the operator out of band).
+service-account.json
+**/service-account.json
+files/service-account.json
+
+# Vault password files, if any.
+.vault_pass
+.vault_pass.txt

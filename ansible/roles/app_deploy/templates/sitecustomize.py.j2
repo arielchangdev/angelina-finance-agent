@@ -1,0 +1,17 @@
+# {{ ansible_managed }}
+# Angelina Hybrid Cloud — venv sitecustomize.py
+# ---------------------------------------------------------------------------
+# chromadb requires sqlite >= 3.35, but RHEL/Rocky 9 ships the stdlib sqlite3
+# bound to system SQLite 3.34. This shim makes Python import the newer
+# pysqlite3-binary in place of the stdlib sqlite3 module, so chromadb works
+# without rebuilding system SQLite. Python auto-imports sitecustomize at
+# interpreter startup, so this applies to every process using this venv.
+import sys
+
+try:
+    __import__("pysqlite3")
+    sys.modules["sqlite3"] = sys.modules.pop("pysqlite3")
+    sys.modules["sqlite3.dbapi2"] = sys.modules["sqlite3"]
+except ImportError:
+    # pysqlite3 not installed — fall back to the stdlib sqlite3 silently.
+    pass
