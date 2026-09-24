@@ -1,0 +1,41 @@
+---
+# ===========================================================================
+# ops_heal/notify.yml — send one Telegram message via ansible.builtin.uri.
+# ===========================================================================
+# Expects `notify_text` in vars. Reads telegram_bot_token / telegram_chat_id
+# from the git-ignored vault (placeholders in vault.example.yml). If the creds
+# are missing or still placeholders, it logs and skips instead of failing — a
+# self-healing run must not abort just because notifications are unconfigured.
+# ===========================================================================
+
+- name: "notify — evaluate whether Telegram is configured"
+  ansible.builtin.set_fact:
+    _telegram_ready: >-
+      {{ (telegram_bot_token | default('') | length > 0)
+         and (telegram_bot_token | default('') != 'YOUR_TELEGRAM_BOT_TOKEN')
+         and (telegram_chat_id | default('') | length > 0)
+         and (telegram_chat_id | default('') != 'YOUR_TELEGRAM_CHAT_ID') }}
+
+- name: "notify — Telegram not configured (skip, do not fail)"
+  ansible.builtin.debug:
+    msg: "[notify skipped — Telegram creds unset] {{ notify_text }}"
+  when: not (_telegram_ready | bool)
+
+- name: "notify — send Telegram message"
+  ansible.builtin.uri:
+    url: "https://api.telegram.org/bot{{ telegram_bot_token }}/sendMessage"
+    method: POST
+    body_format: form-urlencoded
+    body:
+      chat_id: "{{ telegram_chat_id }}"
+      text: "{{ notify_text }}"
+    status_code: [200]
+    timeout: 15
+  register: _telegram_result
+  changed_when: false
+  # run the HTTP call from the controller, not the managed host
+  delegate_to: localhost
+  become: false
+  when: _telegram_ready | bool
+  # notification failure must never abort a heal/check run
+  failed_when: false

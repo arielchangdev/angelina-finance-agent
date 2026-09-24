@@ -1,0 +1,139 @@
+---
+# ===========================================================================
+# cert_check — read-only TLS-expiry probe: check -> route -> notify -> summarise.
+# ===========================================================================
+# READ-ONLY: the only remote action is an openssl query of the live public
+# endpoint. Nothing is changed. Every command uses changed_when: false.
+# ===========================================================================
+
+# --- Defaults resolvable via -e ---------------------------------------------
+# cert_domain        : the public FQDN to probe (secret-ish; from vault).
+# cert_port          : TLS port (default 443).
+# cert_warn_days      : reminder threshold (default 21).
+# cert_crit_days      : warning threshold (default 7).
+# cert_notify         : true -> send Telegram on threshold; false -> quiet.
+# notify_on_healthy   : true -> notify even when > warn threshold.
+
+- name: "Resolve run-time knobs"
+  ansible.builtin.set_fact:
+    cert_domain: "{{ cert_domain | default('') }}"
+    cert_port: "{{ cert_port | default(443) }}"
+    cert_warn_days: "{{ cert_warn_days | default(21) | int }}"
+    cert_crit_days: "{{ cert_crit_days | default(7) | int }}"
+    cert_notify: "{{ cert_notify | default(true) | bool }}"
+    notify_on_healthy: "{{ notify_on_healthy | default(false) | bool }}"
+  tags: [cert]
+
+- name: "Fail early if cert_domain is not configured"
+  ansible.builtin.assert:
+    that:
+      - cert_domain | length > 0
+      - cert_domain != 'YOUR_CERT_DOMAIN'
+    fail_msg: >-
+      cert_domain is not set. Put the real FQDN in the git-ignored vault
+      (vault.yml) or pass -e cert_domain=example.org.
+  tags: [cert]
+
+# --- 1. CHECK ---------------------------------------------------------------
+# Read the live cert's notAfter date. `echo |` closes stdin so s_client returns
+# promptly; 2>/dev/null drops the verbose handshake. Read-only.
+- name: "1. Read live cert expiry date (openssl s_client | x509 -enddate)"
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    echo | openssl s_client -connect {{ cert_domain }}:{{ cert_port }}
+    -servername {{ cert_domain }} 2>/dev/null
+    | openssl x509 -noout -enddate 2>/dev/null
+    | sed 's/^notAfter=//'
+  args:
+    executable: /bin/bash
+  register: cert_enddate_raw
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  tags: [cert]
+
+- name: "Fail if the endpoint returned no cert date"
+  ansible.builtin.assert:
+    that:
+      - cert_enddate_raw.stdout | trim | length > 0
+    fail_msg: >-
+      Could not read a certificate expiry date from
+      {{ cert_domain }}:{{ cert_port }}. Is the endpoint reachable and serving
+      HTTPS?
+  tags: [cert]
+
+# --- 2. Compute days remaining ----------------------------------------------
+# Convert the notAfter string to an epoch and subtract "now" (also epoch).
+- name: "2a. Convert cert expiry to epoch seconds"
+  ansible.builtin.command: "date -d '{{ cert_enddate_raw.stdout | trim }}' +%s"
+  register: cert_expiry_epoch
+  changed_when: false
+  check_mode: false
+  tags: [cert]
+
+- name: "2b. Current epoch seconds"
+  ansible.builtin.command: "date +%s"
+  register: cert_now_epoch
+  changed_when: false
+  check_mode: false
+  tags: [cert]
+
+- name: "2c. Derive days remaining"
+  ansible.builtin.set_fact:
+    cert_days_remaining: "{{ (((cert_expiry_epoch.stdout | int) - (cert_now_epoch.stdout | int)) // 86400) | int }}"
+  tags: [cert]
+
+# --- 3. ROUTE by threshold --------------------------------------------------
+- name: "3. Route by days remaining"
+  ansible.builtin.set_fact:
+    cert_branch: >-
+      {{ 'ok'   if (cert_days_remaining | int) > (cert_warn_days | int)
+         else ('warn' if (cert_days_remaining | int) >= (cert_crit_days | int)
+               else 'crit') }}
+  tags: [cert]
+
+# --- 4. NOTIFY (Telegram via shared task) -----------------------------------
+- name: "4a. Notify — healthy (only when notify_on_healthy=true)"
+  ansible.builtin.include_tasks: notify.yml
+  vars:
+    notify_text: >-
+      ✅ TLS cert for {{ cert_domain }} is healthy — expires in
+      {{ cert_days_remaining }} days.
+  when:
+    - cert_notify | bool
+    - cert_branch == 'ok'
+    - notify_on_healthy | bool
+  tags: [cert, notify]
+
+- name: "4b. Notify — reminder (7..21 days)"
+  ansible.builtin.include_tasks: notify.yml
+  vars:
+    notify_text: >-
+      🔶 TLS cert for {{ cert_domain }} expires in {{ cert_days_remaining }}
+      days. Caddy should auto-renew; monitoring.
+  when:
+    - cert_notify | bool
+    - cert_branch == 'warn'
+  tags: [cert, notify]
+
+- name: "4c. Notify — warning (< 7 days)"
+  ansible.builtin.include_tasks: notify.yml
+  vars:
+    notify_text: >-
+      🔴 TLS cert for {{ cert_domain }} expires in {{ cert_days_remaining }}
+      days! Verify Caddy auto-renewal.
+  when:
+    - cert_notify | bool
+    - cert_branch == 'crit'
+  tags: [cert, notify]
+
+# --- 5. SUMMARY -------------------------------------------------------------
+- name: "5. Summary"
+  ansible.builtin.debug:
+    msg: >-
+      domain={{ cert_domain }}
+      expires={{ cert_enddate_raw.stdout | trim }}
+      days_remaining={{ cert_days_remaining }}
+      branch={{ cert_branch }}
+      notify={{ cert_notify }}
+  tags: [cert]

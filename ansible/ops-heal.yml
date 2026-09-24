@@ -1,0 +1,39 @@
+---
+# ===========================================================================
+# Angelina Hybrid Cloud — ops-heal.yml (service self-healing workflow).
+# ===========================================================================
+# Mirrors the AAP orchestrator-demo "Service State Routing" pattern, built on
+# free ansible-core only (NO AWX/AAP). Flow: CHECK -> ROUTE BY STATE ->
+# REMEDIATE (gated restart) -> NOTIFY (Telegram) -> SUMMARISE.
+#
+# Target: angelina.service on each inventory host.
+#
+# ---------------------------------------------------------------------------
+# SAFETY MODEL (read before running against production):
+#   * The ONLY mutating action is `systemctl restart angelina.service`.
+#     No config, no packages, no other services are touched.
+#   * The restart is GATED behind `when:` the service is genuinely NOT active.
+#     On a healthy host this playbook makes ZERO changes (changed=0).
+#   * PREVIEW MODE: run with `-e heal_enabled=false` to disable the restart.
+#     In preview mode a down service is only REPORTED (what it WOULD do), never
+#     restarted. Default heal_enabled=true.
+#   * This is a MANUAL / on-demand playbook. No cron / auto-trigger is installed
+#     by it — auto-scheduling remediation is a separate opt-in (see OPS_README).
+#
+# Run:
+#   # validate without connecting
+#   ansible-playbook --syntax-check -i inventory.ops.example.ini ops-heal.yml
+#   # safe preview against the real hosts (reports only, restarts nothing)
+#   ansible-playbook -i inventory.ops.ini ops-heal.yml -e heal_enabled=false
+#   # live self-healing (will restart ONLY a service that is actually down)
+#   ansible-playbook -i inventory.ops.ini ops-heal.yml
+# ===========================================================================
+- name: Angelina self-healing — check, route, remediate (gated), notify
+  hosts: angelina_hosts
+  gather_facts: true
+  # become is needed only for the systemctl restart on hosts that require sudo
+  # (the local prod VM needs a become password; the cloud VM is passwordless).
+  become: true
+
+  roles:
+    - role: ops_heal

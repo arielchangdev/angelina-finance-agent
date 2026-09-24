@@ -1,0 +1,39 @@
+---
+# ===========================================================================
+# Angelina Hybrid Cloud — cert-check.yml (proactive TLS-expiry workflow).
+# ===========================================================================
+# Mirrors the AAP orchestrator-demo "Proactive Assessment" pattern, built on
+# free ansible-core only (NO AWX/AAP). Flow: CHECK (days-until-expiry) ->
+# ROUTE BY THRESHOLD -> NOTIFY (Telegram) -> SUMMARISE.
+#
+# Target: the public HTTPS endpoint served for {{ cert_domain }} (Let's Encrypt
+# cert fronted by Caddy on the cloud VM).
+#
+# ---------------------------------------------------------------------------
+# STRICTLY READ-ONLY. This playbook only READS the live cert's notAfter date
+# via `openssl s_client | openssl x509 -noout -enddate` and notifies. It NEVER
+# changes anything — Caddy owns renewal. It does not restart Caddy, edit config,
+# or touch the cert store. It is safe against production.
+#
+# NOTIFY thresholds (days remaining until expiry):
+#   > cert_warn_days (default 21)         -> OK (quiet unless notify_on_healthy)
+#   cert_crit_days..cert_warn_days (7..21)-> 🔶 reminder
+#   < cert_crit_days (default 7)          -> 🔴 warning
+#
+# Run:
+#   # validate without connecting
+#   ansible-playbook --syntax-check -i inventory.ops.example.ini cert-check.yml
+#   # compute + print days remaining WITHOUT notifying (logic dry-run)
+#   ansible-playbook -i inventory.ops.ini cert-check.yml -e cert_notify=false
+#   # real proactive check (may send ONE Telegram if a threshold is crossed)
+#   ansible-playbook -i inventory.ops.ini cert-check.yml
+# ===========================================================================
+- name: Angelina proactive TLS-cert expiry check — read-only + notify
+  # Runs against the cloud host (which serves the public cert and has openssl).
+  hosts: cloud_hosts
+  gather_facts: true
+  # No privilege escalation needed: probing the public endpoint is unprivileged.
+  become: false
+
+  roles:
+    - role: cert_check

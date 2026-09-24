@@ -1,0 +1,150 @@
+---
+# ===========================================================================
+# ops_heal — service self-healing: check -> route -> remediate (gated) -> notify.
+# ===========================================================================
+# Only mutating step is the systemctl restart, which is gated behind BOTH:
+#   * the service being genuinely not active, AND
+#   * heal_enabled (default true; set false for a safe preview / dry-run).
+# Every read-only probe uses changed_when: false so a healthy run reports
+# changed=0.
+# ===========================================================================
+
+# --- Defaults resolvable via -e ---------------------------------------------
+# heal_enabled       : true  -> restart a down service; false -> preview only.
+# notify_on_healthy  : false -> stay quiet when healthy (avoid Telegram noise).
+# ops_service        : the systemd unit to heal (defaults to angelina.service).
+
+- name: "Resolve run-time knobs"
+  ansible.builtin.set_fact:
+    ops_service: "{{ ops_service | default(angelina_service_name | default('angelina') ~ '.service') }}"
+    heal_enabled: "{{ heal_enabled | default(true) | bool }}"
+    notify_on_healthy: "{{ notify_on_healthy | default(false) | bool }}"
+  tags: [heal]
+
+# --- 1. CHECK ---------------------------------------------------------------
+- name: "1. Check current service state (systemctl is-active)"
+  # is-active exits non-zero when not active; that is expected, so never fail
+  # or report changed on it — this is a pure read.
+  ansible.builtin.command: "systemctl is-active {{ ops_service }}"
+  register: heal_active_before
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  tags: [heal]
+
+- name: "Record the observed initial state"
+  ansible.builtin.set_fact:
+    heal_state_before: "{{ heal_active_before.stdout | trim | default('unknown', true) }}"
+  tags: [heal]
+
+# --- 2. ROUTE ---------------------------------------------------------------
+# "active" -> healthy path (no action). Anything else (inactive/failed/
+# activating/unknown) -> remediation path, gated below.
+- name: "2. Route by state (derive whether remediation is needed)"
+  ansible.builtin.set_fact:
+    heal_needs_action: "{{ heal_state_before != 'active' }}"
+  tags: [heal]
+
+# --- 3a. REMEDIATE (PREVIEW) ------------------------------------------------
+# When a service is down but heal_enabled is false, we only REPORT what we
+# would do. This makes ZERO changes — the safe preview path.
+- name: "3a. PREVIEW — service down but heal disabled (no restart performed)"
+  ansible.builtin.debug:
+    msg: >-
+      [PREVIEW] {{ ops_service }} is '{{ heal_state_before }}' on
+      {{ inventory_hostname }}. heal_enabled=false, so NO restart was performed.
+      A live run (heal_enabled=true) WOULD restart it.
+  when:
+    - heal_needs_action
+    - not (heal_enabled | bool)
+  tags: [heal]
+
+# --- 3b. REMEDIATE (LIVE, GATED) --------------------------------------------
+# The ONLY mutating action in this playbook. Runs strictly when the service is
+# not active AND heal_enabled is true. On a healthy host this is skipped, so
+# changed=0.
+- name: "3b. REMEDIATE — restart the down service (gated)"
+  ansible.builtin.systemd:
+    name: "{{ ops_service }}"
+    state: restarted
+  become: true
+  register: heal_restart
+  when:
+    - heal_needs_action
+    - heal_enabled | bool
+  tags: [heal]
+
+# --- 3c. RE-CHECK after a live restart --------------------------------------
+- name: "3c. Re-check service state after restart"
+  ansible.builtin.command: "systemctl is-active {{ ops_service }}"
+  register: heal_active_after
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when:
+    - heal_needs_action
+    - heal_enabled | bool
+  tags: [heal]
+
+- name: "Record the post-remediation state"
+  ansible.builtin.set_fact:
+    heal_state_after: >-
+      {{ (heal_active_after.stdout | trim)
+         if (heal_needs_action and (heal_enabled | bool))
+         else heal_state_before }}
+  tags: [heal]
+
+# --- 4. Derive the action label + notify plan -------------------------------
+- name: "Classify the outcome"
+  ansible.builtin.set_fact:
+    heal_action: >-
+      {{ 'none'
+         if not heal_needs_action
+         else ('preview-would-restart' if not (heal_enabled | bool)
+               else ('restarted-recovered' if heal_state_after == 'active'
+                     else 'restart-failed')) }}
+  tags: [heal]
+
+# --- 5. NOTIFY (Telegram via ansible.builtin.uri) ---------------------------
+# Notification messages per branch. Sending is delegated to a shared task file
+# so both playbooks reuse the same Telegram call.
+- name: "5a. Notify — healthy (only when notify_on_healthy=true)"
+  ansible.builtin.include_tasks: notify.yml
+  vars:
+    notify_text: "✅ {{ ops_service }} is healthy (active) on {{ inventory_hostname }}."
+  when:
+    - not heal_needs_action
+    - notify_on_healthy | bool
+  tags: [heal, notify]
+
+- name: "5b. Notify — auto-restart recovered the service"
+  ansible.builtin.include_tasks: notify.yml
+  vars:
+    notify_text: >-
+      ⚠️ {{ ops_service }} was down on {{ inventory_hostname }}, auto-restarted,
+      now active.
+  when:
+    - heal_action == 'restarted-recovered'
+  tags: [heal, notify]
+
+- name: "5c. Notify — auto-restart FAILED (escalation)"
+  ansible.builtin.include_tasks: notify.yml
+  vars:
+    notify_text: >-
+      🔴 {{ ops_service }} DOWN on {{ inventory_hostname }} and auto-restart
+      FAILED (state='{{ heal_state_after }}'). Manual intervention needed.
+  when:
+    - heal_action == 'restart-failed'
+  tags: [heal, notify]
+
+# --- 6. SUMMARY -------------------------------------------------------------
+- name: "6. Summary"
+  ansible.builtin.debug:
+    msg: >-
+      host={{ inventory_hostname }}
+      service={{ ops_service }}
+      state_before={{ heal_state_before }}
+      state_after={{ heal_state_after }}
+      heal_enabled={{ heal_enabled }}
+      action={{ heal_action }}
+  tags: [heal]
