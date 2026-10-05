@@ -2,6 +2,8 @@
 
 > A self-hosted, zero-cost AI-powered financial analysis agent with daily automated market insights and Telegram notifications.
 
+> 📄 **Engineering deep-dive:** see **[CASE_STUDY.md](CASE_STUDY.md)** — the v3 hybrid local+cloud architecture, design trade-offs, and the real production bugs solved (failover, HTTPS sync, IaC).
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-green.svg)](https://www.python.org/)
 [![Podman](https://img.shields.io/badge/Container-Podman-purple.svg)](https://podman.io/)
