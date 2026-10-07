@@ -3,9 +3,12 @@
 # cron_jobs — failover push cron + DuckDNS updater + cron (Step 8 of runbook).
 # ===========================================================================
 # Installs (for the 'angelina' user):
-#   * 23:00 daily  -> app.failover.run_daily_push (role-gated; cloud only
+#   * 23:30 daily  -> app.failover.run_daily_push (role-gated; cloud only
 #     pushes when the local instance is classified offline). Fires at Taiwan
-#     23:00 because the common role set the timezone to Asia/Taipei.
+#     23:30 (offset 30 min after the local 23:00 push) so that on the day the
+#     local instance returns online, its fresh heartbeat is already stamped
+#     before the cloud checks -> no handover-day double push. Timezone is
+#     Asia/Taipei (set by the common role).
 #   * DuckDNS updater script -> /opt/angelina/deploy/duckdns-update.sh
 #   * */5 * * * *  -> duckdns-update.sh
 #   * @reboot      -> duckdns-update.sh (ephemeral IP may change after stop/start)
@@ -28,11 +31,11 @@
     mode: "0755"
 
 # --- 23:00 failover daily push --------------------------------------------
-- name: Install 23:00 failover daily-push cron (sources .env first)
+- name: Install 23:30 failover daily-push cron (sources .env first)
   ansible.builtin.cron:
     name: "angelina failover daily push"
     user: "{{ angelina_user }}"
-    minute: "0"
+    minute: "30"
     hour: "23"
     job: >-
       cd {{ angelina_home }} && set -a && . {{ angelina_env_file }} && set +a &&
