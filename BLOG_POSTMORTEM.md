@@ -228,4 +228,4 @@ If you're building something small and constrained — a side project, a home la
 
 Boring is a feature.
 
-*Code & full case study: [your GitHub repo link]*
+*Code & full case study: https://github.com/arielchangdev/angelina-finance-agent*

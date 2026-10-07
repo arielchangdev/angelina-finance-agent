@@ -35,7 +35,7 @@ FastAPI + a vector database + a hosted LLM, wired together and operated on free-
 - **At-most-once guarantee** — never a duplicate daily job across two nodes, by design.
 - **Disciplined release history** — tagged iterations from v1.0.0 → v3.4.1, each secret-scanned before commit.
 
-Full technical write-up: see **CASE_STUDY.md** in the repository · Code & details: **[your GitHub repo link]**
+Full technical write-up: see **CASE_STUDY.md** in the repository · Code & details: **https://github.com/arielchangdev/angelina-finance-agent**
 
 ---
 
@@ -58,9 +58,9 @@ Python · FastAPI / uvicorn · Ansible (idempotent provisioning + ops automation
 
 ## Get in touch
 
-- Email: **[your-email@example.com]**
-- LinkedIn: **[your LinkedIn]**
-- GitHub: **[your GitHub]**
+- Email: **ariel86.chang@gmail.com**
+- LinkedIn: **https://www.linkedin.com/in/ariel-chang-690a89160**
+- GitHub: **https://github.com/arielchangdev/angelina-finance-agent**
 
 Tell me what you're running (or want to run), your constraints, and what "reliable enough" means for you. I'll come back with a scoped approach.
 
