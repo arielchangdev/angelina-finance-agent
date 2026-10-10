@@ -1,4 +1,4 @@
-"""
+﻿"""
 Heartbeat and presence detection.
 
 Writes/reads a single ISO-8601 UTC timestamp to a dedicated "Heartbeat" tab in
@@ -166,3 +166,39 @@ def is_local_online(now_utc: datetime | None = None) -> bool:
         window_hours=PRESENCE_WINDOW_HOURS,
     )
     return online
+
+
+# ---------------------------------------------------------------------------
+# Daily-push dedup marker (shared across local+cloud via Heartbeat!B2)
+# ---------------------------------------------------------------------------
+PUSH_MARKER_CELL = "B2"
+
+
+def read_last_push_date():
+    try:
+        spreadsheet = _open_spreadsheet()
+        worksheet = _get_heartbeat_worksheet(spreadsheet, create=False)
+        raw = worksheet.acell(PUSH_MARKER_CELL).value
+    except Exception as exc:
+        logger.warning("push_marker_read_failed", error=str(exc))
+        return None
+    return raw.strip() if raw else None
+
+
+def write_last_push_date(date_str=None):
+    if date_str is None:
+        date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    try:
+        spreadsheet = _open_spreadsheet()
+        worksheet = _get_heartbeat_worksheet(spreadsheet, create=True)
+        worksheet.update_acell(PUSH_MARKER_CELL, date_str)
+        logger.info("push_marker_written", cell=PUSH_MARKER_CELL, date=date_str)
+    except Exception as exc:
+        logger.error("push_marker_write_failed", error=str(exc))
+
+
+def already_pushed_today(now_utc=None):
+    if now_utc is None:
+        now_utc = datetime.now(timezone.utc)
+    today = now_utc.strftime("%Y-%m-%d")
+    return read_last_push_date() == today
