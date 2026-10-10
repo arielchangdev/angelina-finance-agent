@@ -44,6 +44,13 @@ async def run_daily_push() -> dict:
 
 
 async def _run_local_push() -> dict:
+    # If someone (the cloud failover) already pushed today, don't double-push.
+    # Still stamp the heartbeat so the cloud sees local is back online.
+    if already_pushed_today():
+        logger.info("dedup_skip", role="local", reason="already_pushed_today")
+        write_heartbeat()
+        logger.info("heartbeat_written", role="local")
+        return {"role": "local", "action": "dedup_skip", "heartbeat_written": True}
     pushed = False
     try:
         pushed = await _run_analysis_and_push()
